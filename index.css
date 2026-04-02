@@ -1,0 +1,789 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import { MessageCircle, X, Send, User, Bot, Mic, Volume2, Square, History, Plus, Trash2, Menu, Copy, Check, Edit2, User2, Phone, PhoneOff } from 'lucide-react';
+import { sendMessageStream, transcribeAudio, textToSpeech, connectLive } from '../services/gemini';
+import { useTheme } from '../App';
+import { db, handleFirestoreError, OperationType } from '../firebase';
+import LoadingSpinner from './LoadingSpinner';
+import { doc, onSnapshot } from 'firebase/firestore';
+
+interface Message {
+  id: string;
+  role: 'user' | 'model';
+  text: string;
+}
+
+interface ChatSession {
+  id: string;
+  title: string;
+  messages: Message[];
+  timestamp: number;
+}
+
+const ChatWidget: React.FC = () => {
+  const { theme } = useTheme();
+  const [isOpen, setIsOpen] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [selectedVoice, setSelectedVoice] = useState<'Male' | 'Female'>('Male');
+  const [responseMode, setResponseMode] = useState<'Short' | 'Think' | 'Pro'>('Short');
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [inputValue, setInputValue] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState<string | null>(null);
+  const [isLiveTalking, setIsLiveTalking] = useState(false);
+  const [liveSession, setLiveSession] = useState<any>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editInputValue, setEditInputValue] = useState('');
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [assistantConfig, setAssistantConfig] = useState<any>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+
+  // Load assistant config
+  useEffect(() => {
+    const unsubscribe = onSnapshot(doc(db, 'settings', 'assistant'), (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        setAssistantConfig(data);
+        if (data.voice) setSelectedVoice(data.voice);
+        if (data.mode) setResponseMode(data.mode);
+      }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'settings/assistant');
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Load history on mount
+  useEffect(() => {
+    const savedSessions = localStorage.getItem('shakir_chat_sessions');
+    if (savedSessions) {
+      try {
+        const parsed = JSON.parse(savedSessions);
+        setSessions(parsed);
+      } catch (e) {
+        console.error('Failed to parse sessions', e);
+      }
+    }
+  }, []);
+
+  // Auto-save current session - ensure it saves on every message change
+  useEffect(() => {
+    if (currentSessionId) {
+      const updatedSessions = sessions.map(s => 
+        s.id === currentSessionId ? { ...s, messages, timestamp: Date.now() } : s
+      );
+      // If session doesn't exist in sessions yet (new chat), add it
+      if (!sessions.find(s => s.id === currentSessionId)) {
+        const current = {
+          id: currentSessionId,
+          title: messages.find(m => m.role === 'user')?.text.slice(0, 30) || 'New Chat',
+          messages,
+          timestamp: Date.now()
+        };
+        const newSessions = [current, ...sessions];
+        setSessions(newSessions);
+        localStorage.setItem('shakir_chat_sessions', JSON.stringify(newSessions));
+      } else {
+        setSessions(updatedSessions);
+        localStorage.setItem('shakir_chat_sessions', JSON.stringify(updatedSessions));
+      }
+    }
+  }, [messages]);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      scrollToBottom();
+      setIsMenuOpen(false); // Fix: Reset menu state when reopening
+    }
+  }, [messages, isOpen]);
+
+  const startNewChat = () => {
+    const newSession: ChatSession = {
+      id: Date.now().toString(),
+      title: 'New Chat',
+      messages: [],
+      timestamp: Date.now()
+    };
+    setSessions([newSession, ...sessions]);
+    setCurrentSessionId(newSession.id);
+    setMessages([]);
+    setShowHistory(false);
+  };
+
+  const loadSession = (session: ChatSession) => {
+    setCurrentSessionId(session.id);
+    setMessages(session.messages);
+    setShowHistory(false);
+  };
+
+  const deleteSession = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    const updated = sessions.filter(s => s.id !== id);
+    setSessions(updated);
+    localStorage.setItem('shakir_chat_sessions', JSON.stringify(updated));
+    if (currentSessionId === id) {
+      setCurrentSessionId(null);
+      setMessages([]);
+    }
+  };
+
+  const handleSend = async (text?: string, isEdit = false, editId?: string) => {
+    const messageText = text || inputValue.trim();
+    if (!messageText) return;
+
+    // If editing, remove all messages after the edited message
+    if (isEdit && editId) {
+      const index = messages.findIndex(m => m.id === editId);
+      if (index !== -1) {
+        setMessages(messages.slice(0, index));
+      }
+      setEditingMessageId(null);
+    }
+
+    // If no current session, start one
+    if (!currentSessionId) {
+      const newId = Date.now().toString();
+      setCurrentSessionId(newId);
+    }
+
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      role: 'user',
+      text: messageText
+    };
+
+    setMessages(prev => [...prev, userMessage]);
+    setInputValue('');
+    setIsLoading(true);
+
+    try {
+      const history = messages.map(msg => ({
+        role: msg.role,
+        parts: [{ text: msg.text }]
+      }));
+
+      const stream = await sendMessageStream(userMessage.text, responseMode, history, assistantConfig?.systemInstruction);
+      
+      const botMessageId = (Date.now() + 1).toString();
+      const botMessage: Message = {
+        id: botMessageId,
+        role: 'model',
+        text: ''
+      };
+
+      setMessages(prev => [...prev, botMessage]);
+
+      let fullText = '';
+      for await (const chunk of stream) {
+        const chunkText = chunk.text;
+        fullText += chunkText;
+        setMessages(prev => prev.map(m => m.id === botMessageId ? { ...m, text: fullText } : m));
+      }
+    } catch (error) {
+      console.error('Chat error:', error);
+      const errorMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: 'model',
+        text: 'Maaf kijiye, kuch technical masla pesh aya hai. Baraye meherbani thodi der baad koshish karein.'
+      };
+      setMessages(prev => [...prev, errorMessage]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCopy = (text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const startEditing = (msg: Message) => {
+    setEditingMessageId(msg.id);
+    setEditInputValue(msg.text);
+  };
+
+  const saveEdit = () => {
+    if (editInputValue.trim() && editingMessageId) {
+      handleSend(editInputValue.trim(), true, editingMessageId);
+    }
+  };
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        audioChunksRef.current.push(event.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const reader = new FileReader();
+        reader.readAsDataURL(audioBlob);
+        reader.onloadend = async () => {
+          const base64Audio = (reader.result as string).split(',')[1];
+          setIsLoading(true);
+          try {
+            const transcribed = await transcribeAudio(base64Audio, 'audio/webm');
+            if (transcribed) {
+              setInputValue(transcribed);
+            }
+          } catch (err) {
+            console.error('Transcription error:', err);
+          } finally {
+            setIsLoading(false);
+          }
+        };
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+    } catch (err) {
+      console.error('Error accessing microphone:', err);
+      alert('Microphone access denied or not available.');
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
+  };
+
+  const stopSpeaking = () => {
+    if (audioSourceRef.current) {
+      audioSourceRef.current.stop();
+      audioSourceRef.current = null;
+    }
+    setIsSpeaking(null);
+  };
+
+  const startLiveTalking = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const context = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+      const source = context.createMediaStreamSource(stream);
+      const processor = context.createScriptProcessor(4096, 1, 1);
+
+      const session = await connectLive({
+        onopen: () => {
+          setIsLiveTalking(true);
+          setIsMenuOpen(false);
+        },
+        onmessage: async (message: any) => {
+          const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
+          if (base64Audio) {
+            const audioData = atob(base64Audio);
+            const arrayBuffer = new ArrayBuffer(audioData.length);
+            const view = new Uint8Array(arrayBuffer);
+            for (let i = 0; i < audioData.length; i++) {
+              view[i] = audioData.charCodeAt(i);
+            }
+            const pcmData = new Int16Array(arrayBuffer);
+            const audioBuffer = context.createBuffer(1, pcmData.length, 24000);
+            const channelData = audioBuffer.getChannelData(0);
+            for (let i = 0; i < pcmData.length; i++) {
+              channelData[i] = pcmData[i] / 32768;
+            }
+            const playSource = context.createBufferSource();
+            playSource.buffer = audioBuffer;
+            playSource.connect(context.destination);
+            playSource.start();
+          }
+        },
+        onclose: () => {
+          stopLiveTalking();
+        },
+        onerror: (err: any) => {
+          console.error('Live error:', err);
+          stopLiveTalking();
+        }
+      }, selectedVoice, assistantConfig?.systemInstruction);
+
+      processor.onaudioprocess = (e) => {
+        const inputData = e.inputBuffer.getChannelData(0);
+        const pcmData = new Int16Array(inputData.length);
+        for (let i = 0; i < inputData.length; i++) {
+          pcmData[i] = Math.max(-1, Math.min(1, inputData[i])) * 32767;
+        }
+        const base64Data = btoa(String.fromCharCode(...new Uint8Array(pcmData.buffer)));
+        session.sendRealtimeInput({
+          media: { data: base64Data, mimeType: 'audio/pcm;rate=16000' }
+        });
+      };
+
+      source.connect(processor);
+      processor.connect(context.destination);
+
+      setLiveSession({ session, stream, context, processor });
+    } catch (err) {
+      console.error('Error starting live talk:', err);
+      alert('Microphone access denied or Live API error.');
+    }
+  };
+
+  const stopLiveTalking = () => {
+    if (liveSession) {
+      liveSession.session.close();
+      liveSession.stream.getTracks().forEach((t: any) => t.stop());
+      liveSession.processor.disconnect();
+      liveSession.context.close();
+      setLiveSession(null);
+    }
+    setIsLiveTalking(false);
+  };
+
+  const playTTS = async (text: string, messageId: string) => {
+    if (isSpeaking === messageId) {
+      stopSpeaking();
+      return;
+    }
+    
+    stopSpeaking();
+    setIsSpeaking(messageId);
+    
+    try {
+      const base64Audio = await textToSpeech(text, selectedVoice);
+      if (base64Audio) {
+        const audioData = atob(base64Audio);
+        const arrayBuffer = new ArrayBuffer(audioData.length);
+        const view = new Uint8Array(arrayBuffer);
+        for (let i = 0; i < audioData.length; i++) {
+          view[i] = audioData.charCodeAt(i);
+        }
+
+        if (!audioContextRef.current) {
+          audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+        }
+        const context = audioContextRef.current;
+        
+        if (context.state === 'suspended') {
+          await context.resume();
+        }
+
+        // Gemini TTS usually returns 24kHz Mono PCM 16-bit
+        const pcmData = new Int16Array(arrayBuffer);
+        const audioBuffer = context.createBuffer(1, pcmData.length, 24000);
+        const channelData = audioBuffer.getChannelData(0);
+        for (let i = 0; i < pcmData.length; i++) {
+          channelData[i] = pcmData[i] / 32768;
+        }
+        
+        const source = context.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(context.destination);
+        source.onended = () => setIsSpeaking(null);
+        audioSourceRef.current = source;
+        source.start();
+      } else {
+        setIsSpeaking(null);
+      }
+    } catch (error) {
+      console.error('TTS error:', error);
+      setIsSpeaking(null);
+    }
+  };
+
+  return (
+    <div className="fixed bottom-4 right-4 sm:bottom-6 sm:right-6 z-[9999] flex flex-col items-end">
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0, y: 50 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0, y: 50 }}
+            transition={{ 
+              duration: 0.4,
+              ease: [0.4, 0, 0.2, 1]
+            }}
+            style={{ transformOrigin: 'bottom right' }}
+            className={`mb-4 w-[calc(100vw-2rem)] sm:w-[360px] h-[500px] sm:h-[550px] ${theme === 'dark' ? 'bg-stone-900 border-stone-800' : 'bg-white border-black'} rounded-2xl shadow-2xl flex flex-col overflow-hidden relative border`}
+          >
+            {/* Header */}
+            <div className={`p-4 pt-6 sm:pt-4 ${theme === 'dark' ? 'bg-orange-600' : 'bg-[#2E7D32]'} flex items-center justify-between z-[60]`}>
+              <div className="flex items-center gap-3">
+                <button 
+                  onClick={() => setIsMenuOpen(!isMenuOpen)}
+                  className="text-white/80 hover:text-white transition-colors p-1"
+                >
+                  <Menu size={20} />
+                </button>
+                <div className="w-8 h-8 sm:w-10 sm:h-10 bg-white/20 rounded-full flex items-center justify-center">
+                  <Bot className="text-white" size={20} />
+                </div>
+                <div>
+                  <h3 className="text-white font-bold font-serif text-xs sm:text-base">{assistantConfig?.name || 'Shakir AI Assistant'}</h3>
+                  <p className="text-orange-100 text-[8px] sm:text-[10px] uppercase tracking-widest">{assistantConfig?.role || 'Mufti Munir Shakir'}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={() => setIsOpen(false)}
+                  className="text-white/80 hover:text-white transition-colors p-1"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 relative overflow-hidden flex flex-col">
+              {/* Menu View */}
+              <AnimatePresence>
+                {isMenuOpen && (
+                  <>
+                    <motion.div 
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      onClick={() => setIsMenuOpen(false)}
+                      className="absolute inset-0 bg-black/50 z-[55]"
+                    />
+                    <motion.div
+                      initial={{ x: '-100%' }}
+                      animate={{ x: 0 }}
+                      exit={{ x: '-100%' }}
+                      className="absolute top-0 left-0 bottom-0 w-64 bg-stone-950 z-[60] p-4 flex flex-col shadow-2xl"
+                    >
+                      <div className="flex items-center justify-between mb-6">
+                        <h4 className="text-stone-100 font-bold flex items-center gap-2">
+                          <Menu size={18} /> Menu
+                        </h4>
+                        <button 
+                          onClick={() => setIsMenuOpen(false)}
+                          className="text-stone-400 hover:text-white"
+                        >
+                          <X size={20} />
+                        </button>
+                      </div>
+
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          <p className={`text-xs ${theme === 'dark' ? 'text-stone-500' : 'text-stone-400'} uppercase tracking-widest font-bold`}>Settings</p>
+                          <div className="flex flex-col gap-2">
+                            <p className={`text-sm ${theme === 'dark' ? 'text-stone-300' : 'text-stone-200'}`}>Voice Selection:</p>
+                            <div className="flex gap-2">
+                              {(['Male', 'Female'] as const).map(v => (
+                                <button
+                                  key={v}
+                                  onClick={() => setSelectedVoice(v)}
+                                  className={`flex-1 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-2 border transition-all ${
+                                    selectedVoice === v 
+                                      ? `${theme === 'dark' ? 'bg-orange-600 border-orange-500' : 'bg-[#2E7D32] border-green-500'} text-white` 
+                                      : 'bg-stone-900 border-stone-800 text-stone-400'
+                                  }`}
+                                >
+                                  <User2 size={14} /> {v}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="h-px bg-stone-800 my-2" />
+
+                        <button 
+                          onClick={() => {
+                            if (isLiveTalking) stopLiveTalking();
+                            else startLiveTalking();
+                          }}
+                          className={`w-full py-3 border rounded-xl font-bold flex items-center justify-center gap-2 transition-colors ${
+                            isLiveTalking 
+                              ? 'bg-red-900/20 border-red-600 text-red-500 hover:bg-red-900/30' 
+                              : 'bg-stone-900 border-stone-800 text-stone-200 hover:bg-stone-800'
+                          }`}
+                        >
+                          {isLiveTalking ? <PhoneOff size={18} /> : <Phone size={18} />}
+                          {isLiveTalking ? 'Stop Live Talk' : 'Live Talking'}
+                        </button>
+
+                        <button 
+                          onClick={() => {
+                            startNewChat();
+                            setIsMenuOpen(false);
+                          }}
+                          className="w-full py-3 bg-stone-900 border border-stone-800 text-stone-200 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-stone-800 transition-colors"
+                        >
+                          <Plus size={18} /> New Chat
+                        </button>
+
+                        <button 
+                          onClick={() => {
+                            setShowHistory(true);
+                            setIsMenuOpen(false);
+                          }}
+                          className="w-full py-3 bg-stone-900 border border-stone-800 text-stone-200 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-stone-800 transition-colors"
+                        >
+                          <History size={18} /> Chat History
+                        </button>
+                      </div>
+                    </motion.div>
+                  </>
+                )}
+              </AnimatePresence>
+              {/* History View */}
+              <AnimatePresence>
+                {showHistory && (
+                  <motion.div
+                    initial={{ x: '-100%' }}
+                    animate={{ x: 0 }}
+                    exit={{ x: '-100%' }}
+                    className="absolute inset-0 bg-stone-950 z-50 p-4 flex flex-col"
+                  >
+                    <div className="flex items-center justify-between mb-4">
+                      <h4 className="text-stone-100 font-bold flex items-center gap-2">
+                        <History size={18} /> Chat History
+                      </h4>
+                      <button 
+                        onClick={() => setShowHistory(false)}
+                        className="text-stone-400 hover:text-white"
+                      >
+                        <X size={20} />
+                      </button>
+                    </div>
+                    
+                    <button 
+                      onClick={startNewChat}
+                      className={`w-full py-3 mb-4 ${theme === 'dark' ? 'bg-orange-600 hover:bg-orange-500' : 'bg-[#2E7D32] hover:bg-green-700'} text-white rounded-xl font-bold flex items-center justify-center gap-2 transition-colors`}
+                    >
+                      <Plus size={18} /> New Chat
+                    </button>
+
+                    <div className="flex-1 overflow-y-auto space-y-2 pr-2 scrollbar-thin scrollbar-thumb-stone-800">
+                      {sessions.length === 0 ? (
+                        <p className="text-stone-500 text-center py-8 text-sm italic">No previous chats found.</p>
+                      ) : (
+                        sessions.map(session => (
+                          <div 
+                            key={session.id}
+                            onClick={() => loadSession(session)}
+                            className={`p-3 rounded-xl border cursor-pointer transition-all flex items-center justify-between group ${
+                              currentSessionId === session.id 
+                                ? `${theme === 'dark' ? 'bg-orange-900/20 border-orange-600/50 text-orange-400' : 'bg-green-50 border-[#2E7D32] text-[#2E7D32]'}` 
+                                : `${theme === 'dark' ? 'bg-stone-900 border-stone-800 text-stone-400 hover:border-stone-700 hover:bg-stone-800' : 'bg-stone-50 border-stone-200 text-stone-600 hover:border-stone-300 hover:bg-stone-100'}`
+                            }`}
+                          >
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium truncate">{session.title}</p>
+                              <p className="text-[10px] opacity-60">{new Date(session.timestamp).toLocaleDateString()}</p>
+                            </div>
+                            <button 
+                              onClick={(e) => deleteSession(e, session.id)}
+                              className="p-1.5 text-stone-600 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* Messages */}
+              <div className={`flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin ${theme === 'dark' ? 'scrollbar-thumb-stone-700' : 'scrollbar-thumb-stone-300'}`}>
+                {messages.length === 0 && !isLiveTalking && (
+                  <div className="h-full flex flex-col items-center justify-center text-center p-8">
+                    <div className={`w-16 h-16 ${theme === 'dark' ? 'bg-stone-800' : 'bg-stone-100'} rounded-full flex items-center justify-center mb-4`}>
+                      <Bot size={32} className={theme === 'dark' ? 'text-orange-500' : 'text-[#2E7D32]'} />
+                    </div>
+                    <h4 className={`${theme === 'dark' ? 'text-stone-100' : 'text-black'} font-bold mb-2`}>{assistantConfig?.name || 'Shakir AI Assistant'}</h4>
+                    <p className="text-stone-400 text-sm">{assistantConfig?.welcomeMessage || 'Main Mufti Sahab ka Shakir AI Assistant hoon. Aap mujhse koi bhi sawal pooch sakte hain.'}</p>
+                  </div>
+                )}
+                
+                {isLiveTalking && (
+                  <div className="h-full flex flex-col items-center justify-center text-center p-8">
+                    <div className="relative">
+                      <div className="w-24 h-24 bg-orange-600/20 rounded-full flex items-center justify-center mb-4 animate-pulse">
+                        <Phone size={40} className="text-orange-500" />
+                      </div>
+                      <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 rounded-full border-2 border-stone-900" />
+                    </div>
+                    <h4 className="text-stone-100 font-bold mb-2">Live Talking Active</h4>
+                    <p className="text-stone-400 text-sm mb-6">Aap bol sakte hain, main sun raha hoon...</p>
+                    <button 
+                      onClick={stopLiveTalking}
+                      className="px-6 py-2 bg-red-600 text-white rounded-full font-bold flex items-center gap-2 hover:bg-red-500 transition-colors"
+                    >
+                      <PhoneOff size={18} /> End Call
+                    </button>
+                  </div>
+                )}
+
+                {!isLiveTalking && messages.map((msg) => (
+                  <div 
+                    key={msg.id} 
+                    className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                  >
+                    <div className={`flex gap-2 max-w-[85%] ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${msg.role === 'user' ? (theme === 'dark' ? 'bg-orange-600' : 'bg-[#2E7D32]') : (theme === 'dark' ? 'bg-stone-800' : 'bg-stone-100')}`}>
+                        {msg.role === 'user' ? <User size={16} className="text-white" /> : <Bot size={16} className={theme === 'dark' ? 'text-orange-500' : 'text-[#2E7D32]'} />}
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        {editingMessageId === msg.id ? (
+                          <div className={`flex flex-col gap-2 ${theme === 'dark' ? 'bg-stone-800 border-stone-700' : 'bg-stone-50 border-stone-200'} p-2 rounded-xl border`}>
+                            <textarea
+                              value={editInputValue}
+                              onChange={(e) => setEditInputValue(e.target.value)}
+                              className={`w-full ${theme === 'dark' ? 'bg-stone-900 text-stone-200 border-stone-800 focus:border-orange-600' : 'bg-white text-black border-stone-200 focus:border-green-600'} text-sm p-2 rounded-lg focus:outline-none border min-h-[60px]`}
+                            />
+                            <div className="flex justify-end gap-2">
+                              <button 
+                                onClick={() => setEditingMessageId(null)}
+                                className="px-3 py-1 text-xs text-stone-400 hover:text-white"
+                              >
+                                Cancel
+                              </button>
+                              <button 
+                                onClick={saveEdit}
+                                className={`px-3 py-1 text-xs ${theme === 'dark' ? 'bg-orange-600 hover:bg-orange-500' : 'bg-[#2E7D32] hover:bg-green-700'} text-white rounded-lg`}
+                              >
+                                Resend
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className={`p-3 rounded-2xl text-sm leading-relaxed relative group ${
+                            msg.role === 'user' 
+                              ? `${theme === 'dark' ? 'bg-orange-600' : 'bg-[#2E7D32]'} text-white rounded-tr-none` 
+                              : `${theme === 'dark' ? 'bg-stone-800 text-stone-200' : 'bg-stone-100 text-black'} rounded-tl-none`
+                          }`}>
+                            {msg.text}
+                            {msg.text && (
+                              <button 
+                                onClick={() => handleCopy(msg.text, msg.id)}
+                                className={`absolute top-1 ${msg.role === 'user' ? '-left-8' : '-right-8'} p-1.5 rounded-lg ${theme === 'dark' ? 'bg-stone-800/50 text-stone-500' : 'bg-stone-200/50 text-stone-600'} hover:text-orange-500 opacity-0 group-hover:opacity-100 transition-all`}
+                                title="Copy"
+                              >
+                                {copiedId === msg.id ? <Check size={12} /> : <Copy size={12} />}
+                              </button>
+                            )}
+                          </div>
+                        )}
+                        <div className={`flex items-center gap-2 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
+                          {msg.role === 'model' && msg.text && (
+                            <button 
+                              onClick={() => playTTS(msg.text, msg.id)}
+                              className={`p-1.5 rounded-lg ${theme === 'dark' ? 'bg-stone-800/50 text-stone-400' : 'bg-stone-100 text-stone-500'} hover:text-orange-500 transition-colors ${isSpeaking === msg.id ? 'text-orange-500 animate-pulse' : ''}`}
+                              title="Sunein"
+                            >
+                              <Volume2 size={14} />
+                            </button>
+                          )}
+                          {msg.role === 'user' && !editingMessageId && (
+                            <button 
+                              onClick={() => startEditing(msg)}
+                              className={`p-1.5 rounded-lg ${theme === 'dark' ? 'bg-stone-800/50 text-stone-400' : 'bg-stone-100 text-stone-500'} hover:text-orange-500 transition-colors`}
+                              title="Edit"
+                            >
+                              <Edit2 size={14} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {isLoading && (
+                  <div className="flex justify-start">
+                    <div className="flex gap-2">
+                      <div className="w-8 h-8 rounded-full bg-stone-800 flex items-center justify-center">
+                        <Bot size={16} className="text-orange-500" />
+                      </div>
+                      <div className="bg-stone-800 p-3 rounded-2xl rounded-tl-none">
+                        <LoadingSpinner small />
+                      </div>
+                    </div>
+                  </div>
+                )}
+                <div ref={messagesEndRef} />
+              </div>
+
+              {/* Mode Selection & Input */}
+              <div className={`p-4 border-t ${theme === 'dark' ? 'border-stone-800 bg-stone-900/50' : 'border-stone-200 bg-stone-50'} space-y-3`}>
+                {/* Mode Buttons */}
+                <div className="flex items-center justify-center gap-2">
+                  {(['Short', 'Think', 'Pro'] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      onClick={() => setResponseMode(mode)}
+                      className={`px-3 py-1 rounded-full text-[10px] font-bold transition-all border ${
+                        responseMode === mode 
+                          ? `${theme === 'dark' ? 'bg-orange-600 border-orange-500' : 'bg-[#2E7D32] border-green-500'} text-white shadow-lg shadow-orange-900/20` 
+                          : `${theme === 'dark' ? 'bg-stone-800 border-stone-700 text-stone-400 hover:border-stone-600' : 'bg-white border-stone-200 text-stone-500 hover:border-stone-300'}`
+                      }`}
+                    >
+                      {mode}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex gap-2">
+                  <button
+                    onClick={isRecording ? stopRecording : startRecording}
+                    className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${
+                      isRecording 
+                        ? 'bg-red-600 text-white animate-pulse' 
+                        : `${theme === 'dark' ? 'bg-stone-800 text-stone-400 hover:text-orange-500' : 'bg-white border border-stone-200 text-stone-500 hover:text-green-600'}`
+                    }`}
+                    title={isRecording ? "Stop Recording" : "Voice Input"}
+                  >
+                    {isRecording ? <Square size={18} /> : <Mic size={18} />}
+                  </button>
+                  <input
+                    type="text"
+                    value={inputValue}
+                    onChange={(e) => setInputValue(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+                    placeholder={isRecording ? "Recording..." : "Apna sawal likhein..."}
+                    disabled={isRecording}
+                    className={`flex-1 ${theme === 'dark' ? 'bg-stone-800 border-stone-700 text-stone-200 focus:border-orange-600' : 'bg-white border-stone-200 text-black focus:border-green-600'} border rounded-xl px-4 py-2 text-sm focus:outline-none transition-colors disabled:opacity-50`}
+                  />
+                  <button
+                    onClick={() => handleSend()}
+                    disabled={isLoading || !inputValue.trim() || isRecording}
+                    className={`w-10 h-10 ${theme === 'dark' ? 'bg-orange-600 hover:bg-orange-500' : 'bg-[#2E7D32] hover:bg-green-700'} rounded-xl flex items-center justify-center text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors`}
+                  >
+                    <Send size={18} />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Toggle Button */}
+      <motion.button
+        whileHover={{ scale: 1.05 }}
+        whileTap={{ scale: 0.95 }}
+        onClick={() => setIsOpen(!isOpen)}
+        className={`w-12 h-12 sm:w-14 sm:h-14 ${theme === 'dark' ? 'bg-orange-600 hover:bg-orange-500' : 'bg-[#2E7D32] hover:bg-green-700'} rounded-full shadow-2xl flex items-center justify-center text-white transition-all duration-300 border border-white/10`}
+      >
+        {isOpen ? <X size={24} className="sm:hidden" /> : <MessageCircle size={24} className="sm:hidden" />}
+        {isOpen ? <X size={28} className="hidden sm:block" /> : <MessageCircle size={28} className="hidden sm:block" />}
+      </motion.button>
+    </div>
+  );
+};
+
+export default ChatWidget;

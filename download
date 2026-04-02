@@ -1,0 +1,1900 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  FileText, 
+  Youtube, 
+  Quote, 
+  BookOpen, 
+  Book, 
+  User, 
+  Bot, 
+  Settings, 
+  Plus, 
+  Edit, 
+  Trash2, 
+  Upload, 
+  Save, 
+  X, 
+  LogOut, 
+  Home as HomeIcon,
+  Eye,
+  Check,
+  Download,
+  ChevronRight,
+  ChevronLeft,
+  Search,
+  AlertCircle,
+  Menu
+} from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { motion, AnimatePresence } from 'motion/react';
+import LoadingSpinner from './components/LoadingSpinner';
+import { auth, db, storage, handleFirestoreError, OperationType } from './firebase';
+import ReactQuill from 'react-quill-new';
+import 'react-quill-new/dist/quill.snow.css';
+import { 
+  signOut, 
+  onAuthStateChanged 
+} from 'firebase/auth';
+import { 
+  collection, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  doc, 
+  onSnapshot, 
+  query, 
+  orderBy, 
+  serverTimestamp,
+  setDoc,
+  getDoc,
+  where
+} from 'firebase/firestore';
+import { ref, uploadBytes, getDownloadURL, uploadBytesResumable } from 'firebase/storage';
+
+// --- Types ---
+
+interface Article {
+  id: string;
+  title: string;
+  titleUrdu: string;
+  content: string;
+  contentUrdu: string;
+  category: string;
+  categoryUrdu: string;
+  imageUrl: string;
+  createdAt: any;
+}
+
+interface Playlist {
+  id: string;
+  title: string;
+  titleUrdu: string;
+  coverUrl: string;
+  videos: Video[];
+  createdAt: any;
+}
+
+interface Video {
+  id: string;
+  title: string;
+  titleUrdu: string;
+  youtubeUrl: string;
+  thumbnailUrl: string;
+  order: number;
+}
+
+interface Hadith {
+  id: string;
+  arabic: string;
+  english: string;
+  urdu: string;
+  reference: string;
+  referenceUrdu: string;
+  createdAt: any;
+}
+
+interface QuranVerse {
+  id: string;
+  arabic: string;
+  english: string;
+  urdu: string;
+  surahName: string;
+  surahNameUrdu: string;
+  surahNumber: number;
+  verseNumber: string;
+  createdAt: any;
+}
+
+interface BookEntry {
+  id: string;
+  title: string;
+  titleUrdu: string;
+  description: string;
+  descriptionUrdu: string;
+  coverUrl: string;
+  pdfUrl: string;
+  createdAt: any;
+}
+
+interface BioSegment {
+  id: string;
+  title: string;
+  titleUrdu: string;
+  content: string;
+  contentUrdu: string;
+  imageUrl?: string;
+  order: number;
+  createdAt: any;
+}
+
+// --- Components ---
+
+// --- UI Components ---
+
+const Toast = ({ message, type = 'success', onClose }: any) => {
+  useEffect(() => {
+    const timer = setTimeout(onClose, 3000);
+    return () => clearTimeout(timer);
+  }, [onClose]);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 50 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 50 }}
+      className={`fixed bottom-8 right-8 z-[100] px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-3 border ${
+        type === 'success' 
+          ? 'bg-green-500 border-green-400 text-white' 
+          : 'bg-red-500 border-red-400 text-white'
+      }`}
+    >
+      {type === 'success' ? <Check size={20} /> : <AlertCircle size={20} />}
+      <span className="font-bold text-sm">{message}</span>
+      <button onClick={onClose} className="ml-2 hover:opacity-70 transition-opacity">
+        <X size={16} />
+      </button>
+    </motion.div>
+  );
+};
+
+const ConfirmModal = ({ isOpen, onClose, onConfirm, title, message }: any) => {
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
+      <motion.div 
+        initial={{ opacity: 0 }} 
+        animate={{ opacity: 1 }} 
+        exit={{ opacity: 0 }} 
+        onClick={onClose} 
+        className="absolute inset-0 bg-black/60 backdrop-blur-sm" 
+      />
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.95, y: 20 }} 
+        animate={{ opacity: 1, scale: 1, y: 0 }} 
+        exit={{ opacity: 0, scale: 0.95, y: 20 }} 
+        className="relative w-full max-w-md p-8 rounded-3xl bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 shadow-2xl"
+      >
+        <div className="w-16 h-16 bg-red-500/10 rounded-2xl flex items-center justify-center text-red-500 mb-6 mx-auto">
+          <Trash2 size={32} />
+        </div>
+        <h2 className="text-2xl font-bold text-stone-900 dark:text-white mb-2 text-center">{title}</h2>
+        <p className="text-stone-500 text-center mb-8">{message}</p>
+        <div className="flex gap-4">
+          <button 
+            onClick={onClose} 
+            className="flex-1 py-3 font-bold text-stone-500 hover:bg-stone-100 dark:hover:bg-stone-800 rounded-xl transition-colors"
+          >
+            Cancel
+          </button>
+          <button 
+            onClick={() => { onConfirm(); onClose(); }} 
+            className="flex-1 py-3 bg-red-500 text-white font-bold rounded-xl shadow-lg shadow-red-500/20 hover:bg-red-600 transition-colors"
+          >
+            Delete
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+};
+
+const Modal = ({ isOpen, onClose, title, children }: { isOpen: boolean, onClose: () => void, title: string, children: React.ReactNode }) => {
+  if (!isOpen) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
+      <motion.div 
+        initial={{ opacity: 0 }} 
+        animate={{ opacity: 1 }} 
+        exit={{ opacity: 0 }} 
+        onClick={onClose} 
+        className="absolute inset-0 bg-black/60 backdrop-blur-sm" 
+      />
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.95, y: 20 }} 
+        animate={{ opacity: 1, scale: 1, y: 0 }} 
+        exit={{ opacity: 0, scale: 0.95, y: 20 }} 
+        className="relative w-full max-w-4xl max-h-[90vh] bg-white dark:bg-stone-900 rounded-3xl shadow-2xl border border-stone-200 dark:border-stone-800 flex flex-col overflow-hidden"
+      >
+        <div className="flex justify-between items-center p-6 sm:p-8 border-b border-stone-100 dark:border-stone-800">
+          <h2 className="text-2xl font-bold text-stone-900 dark:text-white">{title}</h2>
+          <button onClick={onClose} className="p-2 hover:bg-stone-100 dark:hover:bg-stone-800 rounded-full transition-colors">
+            <X size={24} className="text-stone-500" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-6 sm:p-8 custom-scrollbar">
+          {children}
+        </div>
+      </motion.div>
+    </div>
+  );
+};
+
+const FormField = ({ label, labelUrdu, value, onChange, type = "text", isTextArea = false, isRichText = false, dir = "ltr" }: any) => (
+  <div className="space-y-2">
+    <div className="flex justify-between items-center">
+      <label className="admin-label">{label}</label>
+      {labelUrdu && <label className="admin-label font-urdu">{labelUrdu}</label>}
+    </div>
+    {isRichText ? (
+      <div className={`quill-container ${dir === 'rtl' ? 'quill-rtl' : ''}`} dir={dir}>
+        <ReactQuill
+          theme="snow"
+          value={value || ''}
+          onChange={onChange}
+          className={`bg-stone-50 dark:bg-black rounded-xl overflow-hidden border border-stone-200 dark:border-stone-800 text-stone-900 dark:text-white ${dir === 'rtl' ? 'font-urdu' : ''}`}
+        />
+      </div>
+    ) : isTextArea ? (
+      <textarea
+        value={value || ''}
+        onChange={(e) => onChange(e.target.value)}
+        className={`admin-input min-h-[120px] ${dir === 'rtl' ? 'font-urdu text-right' : ''}`}
+        dir={dir}
+      />
+    ) : (
+      <input
+        type={type}
+        value={value || ''}
+        onChange={(e) => onChange(e.target.value)}
+        className={`admin-input ${dir === 'rtl' ? 'font-urdu text-right' : ''}`}
+        dir={dir}
+      />
+    )}
+  </div>
+);
+
+const FileUpload = ({ label, onUpload, accept, currentUrl, type = "image", showToast, onUploadingStateChange }: any) => {
+  const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    setUploading(true);
+    if (onUploadingStateChange) onUploadingStateChange(true);
+    setProgress(0);
+    
+    try {
+      const storageRef = ref(storage, `uploads/${Date.now()}_${file.name}`);
+      const uploadTask = uploadBytesResumable(storageRef, file);
+      
+      uploadTask.on('state_changed', 
+        (snapshot) => {
+          const p = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+          if (!isNaN(p)) {
+            setProgress(p);
+            console.log(`Upload progress: ${p}%`);
+          }
+        }, 
+        (error) => {
+          console.error("Upload failed:", error);
+          alert(`Upload failed: ${error.message} (Code: ${error.code})`);
+          if (error.code === 'storage/unauthorized') {
+            if (showToast) showToast("Permission denied. You must be an admin to upload.", "error");
+          } else {
+            if (showToast) showToast("Upload failed. Please try again.", "error");
+          }
+          setUploading(false);
+          if (onUploadingStateChange) onUploadingStateChange(false);
+        }, 
+        async () => {
+          // Ensure we are at 100% before getting the URL
+          setProgress(100);
+          try {
+            const url = await getDownloadURL(uploadTask.snapshot.ref);
+            onUpload(url);
+            if (showToast) showToast("File uploaded successfully!");
+          } catch (urlError: any) {
+            console.error("Error getting download URL:", urlError);
+            alert(`Error getting download URL: ${urlError.message}`);
+          } finally {
+            setTimeout(() => {
+              setUploading(false);
+              if (onUploadingStateChange) onUploadingStateChange(false);
+              setProgress(0);
+            }, 500);
+          }
+        }
+      );
+    } catch (error: any) {
+      console.error("Upload initialization failed:", error);
+      alert(`Upload initialization failed: ${error.message}`);
+      if (showToast) showToast("Upload failed. Please try again.", "error");
+      setUploading(false);
+      if (onUploadingStateChange) onUploadingStateChange(false);
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <label className="text-xs font-bold text-stone-500 uppercase tracking-widest">{label}</label>
+      <div className="relative group overflow-hidden rounded-2xl border border-dashed border-stone-300 dark:border-stone-700 aspect-video flex items-center justify-center bg-stone-50 dark:bg-stone-900/50">
+        {currentUrl ? (
+          type === "image" ? (
+            <img src={currentUrl} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+          ) : (
+            <div className="flex flex-col items-center gap-2">
+              <Book size={48} className="text-orange-500" />
+              <span className="text-xs font-bold text-stone-500">PDF Uploaded</span>
+            </div>
+          )
+        ) : (
+          <div className="flex flex-col items-center gap-2 text-stone-400">
+            <Upload size={32} />
+            <span className="text-xs font-bold">Click to upload</span>
+          </div>
+        )}
+        
+        {uploading && (
+          <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center p-4">
+            <div className="w-full max-w-[120px] bg-white/20 h-1.5 rounded-full overflow-hidden mb-2">
+              <motion.div 
+                initial={{ width: 0 }}
+                animate={{ width: `${progress}%` }}
+                className="h-full bg-orange-500"
+              />
+            </div>
+            <span className="text-[10px] font-bold text-white uppercase tracking-widest">{Math.round(progress)}% Uploading</span>
+          </div>
+        )}
+
+        {!uploading && (
+          <label className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer flex items-center justify-center">
+            <span className="text-white font-bold text-sm">Change File</span>
+            <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileChange} accept={accept} />
+          </label>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// --- Admin Sections ---
+
+const AdminArticles = ({ showToast, confirmAction, settings }: any) => {
+  const [articles, setArticles] = useState<Article[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingItem, setEditingItem] = useState<Article | null>(null);
+  const [formData, setFormData] = useState({
+    title: '', titleUrdu: '', content: '', contentUrdu: '', category: '', categoryUrdu: '', imageUrl: '',
+    titleFont: '', titleUrduFont: '', contentFont: '', contentUrduFont: ''
+  });
+
+  const englishFonts = [
+    { name: 'Default', value: '' },
+    { name: 'Inter', value: "'Inter', sans-serif" },
+    { name: 'Playfair Display', value: "'Playfair Display', serif" },
+    ...(settings?.customFonts || []).filter((f: any) => f.type === 'english').map((f: any) => ({ name: f.name, value: `'${f.family}', sans-serif` }))
+  ];
+
+  const urduFonts = [
+    { name: 'Default', value: '' },
+    { name: 'Jameel Noori Nastaleeq', value: "'Jameel Noori Nastaleeq', serif" },
+    { name: 'Noto Nastaliq Urdu', value: "'Noto Nastaliq Urdu', serif" },
+    { name: 'Al Qalam Quran Majeed', value: "'Al Qalam Quran Majeed Web Regular', serif" },
+    ...(settings?.customFonts || []).filter((f: any) => f.type === 'urdu').map((f: any) => ({ name: f.name, value: `'${f.family}', sans-serif` }))
+  ];
+
+  useEffect(() => {
+    const q = query(collection(db, 'articles'), orderBy('createdAt', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setArticles(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Article)));
+      setLoading(false);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'articles');
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const path = 'articles';
+    try {
+      if (editingItem) {
+        await updateDoc(doc(db, path, editingItem.id), { ...formData });
+        showToast("Article updated successfully!");
+      } else {
+        await addDoc(collection(db, path), { ...formData, createdAt: serverTimestamp() });
+        showToast("Article created successfully!");
+      }
+      setIsModalOpen(false);
+      setEditingItem(null);
+      setFormData({ title: '', titleUrdu: '', content: '', contentUrdu: '', category: '', categoryUrdu: '', imageUrl: '' });
+    } catch (error) {
+      handleFirestoreError(error, editingItem ? OperationType.UPDATE : OperationType.CREATE, path);
+      showToast("Operation failed. Check permissions.", "error");
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    confirmAction(
+      "Delete Article",
+      "Are you sure you want to delete this article? This action cannot be undone.",
+      async () => {
+        const path = 'articles';
+        try {
+          await deleteDoc(doc(db, path, id));
+          showToast("Article deleted successfully!");
+        } catch (error) {
+          handleFirestoreError(error, OperationType.DELETE, path);
+          showToast("Delete failed. Check permissions.", "error");
+        }
+      }
+    );
+  };
+
+  if (loading) return <LoadingSpinner />;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <h3 className="text-xl font-bold text-stone-900 dark:text-white">Manage Articles</h3>
+        <button onClick={() => { setEditingItem(null); setFormData({ title: '', titleUrdu: '', content: '', contentUrdu: '', category: '', categoryUrdu: '', imageUrl: '' }); setIsModalOpen(true); }} className="bg-orange-600 text-white px-6 py-2 rounded-xl font-bold flex items-center gap-2 shadow-lg shadow-orange-600/20">
+          <Plus size={20} /> Add Article
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {articles.map(item => (
+          <div key={item.id} className="bg-white dark:bg-stone-900 p-4 rounded-2xl border border-stone-200 dark:border-stone-800 shadow-sm group">
+            <div className="relative overflow-hidden rounded-xl mb-4 h-40">
+              {item.imageUrl ? (
+                <img src={item.imageUrl} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" referrerPolicy="no-referrer" />
+              ) : (
+                <div className="w-full h-full bg-stone-100 dark:bg-stone-800 flex items-center justify-center text-stone-400">
+                  <FileText size={48} />
+                </div>
+              )}
+              <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                <button onClick={() => { setEditingItem(item); setFormData(item); setIsModalOpen(true); }} className="p-2 bg-white/90 dark:bg-stone-900/90 text-blue-500 rounded-lg shadow-lg hover:scale-110 transition-all"><Edit size={16} /></button>
+                <button onClick={() => handleDelete(item.id)} className="p-2 bg-white/90 dark:bg-stone-900/90 text-red-500 rounded-lg shadow-lg hover:scale-110 transition-all"><Trash2 size={16} /></button>
+              </div>
+            </div>
+            <h4 className="font-bold text-stone-900 dark:text-white mb-1 line-clamp-1">{item.title}</h4>
+            <p className="text-xs text-stone-500 font-urdu line-clamp-1" dir="rtl">{item.titleUrdu}</p>
+          </div>
+        ))}
+      </div>
+
+      <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={editingItem ? "Edit Article" : "Add Article"}>
+        <form onSubmit={handleSave} className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="space-y-2">
+              <FormField label="Title (English)" value={formData.title} onChange={(v: any) => setFormData({...formData, title: v})} />
+              <select 
+                value={formData.titleFont} 
+                onChange={(e) => setFormData({...formData, titleFont: e.target.value})}
+                className="w-full px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-black text-stone-500"
+              >
+                {englishFonts.map(f => <option key={f.value} value={f.value}>{f.name} Font</option>)}
+              </select>
+            </div>
+            <div className="space-y-2">
+              <FormField label="Title (Urdu)" labelUrdu="عنوان" value={formData.titleUrdu} onChange={(v: any) => setFormData({...formData, titleUrdu: v})} dir="rtl" />
+              <select 
+                value={formData.titleUrduFont} 
+                onChange={(e) => setFormData({...formData, titleUrduFont: e.target.value})}
+                className="w-full px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-black text-stone-500"
+              >
+                {urduFonts.map(f => <option key={f.value} value={f.value}>{f.name} Font</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <FormField label="Category (English)" value={formData.category} onChange={(v: any) => setFormData({...formData, category: v})} />
+            <FormField label="Category (Urdu)" labelUrdu="زمرہ" value={formData.categoryUrdu} onChange={(v: any) => setFormData({...formData, categoryUrdu: v})} dir="rtl" />
+          </div>
+          <FileUpload label="Featured Image" currentUrl={formData.imageUrl} onUpload={(url: any) => setFormData({...formData, imageUrl: url})} showToast={showToast} />
+          <div className="space-y-6">
+            <div className="space-y-2">
+              <FormField label="Content (English)" isRichText value={formData.content} onChange={(v: any) => setFormData({...formData, content: v})} />
+              <select 
+                value={formData.contentFont} 
+                onChange={(e) => setFormData({...formData, contentFont: e.target.value})}
+                className="w-full px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-black text-stone-500"
+              >
+                {englishFonts.map(f => <option key={f.value} value={f.value}>{f.name} Font</option>)}
+              </select>
+            </div>
+            <div className="space-y-2">
+              <FormField label="Content (Urdu)" labelUrdu="مواد" isRichText value={formData.contentUrdu} onChange={(v: any) => setFormData({...formData, contentUrdu: v})} dir="rtl" />
+              <select 
+                value={formData.contentUrduFont} 
+                onChange={(e) => setFormData({...formData, contentUrduFont: e.target.value})}
+                className="w-full px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-black text-stone-500"
+              >
+                {urduFonts.map(f => <option key={f.value} value={f.value}>{f.name} Font</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="flex justify-end gap-4 pt-4">
+            <button type="button" onClick={() => setIsModalOpen(false)} className="px-6 py-2 font-bold text-stone-500">Cancel</button>
+            <button type="submit" className="bg-orange-600 text-white px-8 py-2 rounded-xl font-bold shadow-lg shadow-orange-600/20">Save Article</button>
+          </div>
+        </form>
+      </Modal>
+    </div>
+  );
+};
+
+const AdminPlaylists = ({ showToast, confirmAction }: any) => {
+  const [playlists, setPlaylists] = useState<Playlist[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingPlaylist, setEditingPlaylist] = useState<Playlist | null>(null);
+  const [activePlaylistId, setActivePlaylistId] = useState<string | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+
+  const [playlistForm, setPlaylistForm] = useState<{
+    title: string;
+    titleUrdu: string;
+    coverUrl: string;
+    videos: Video[];
+  }>({
+    title: '', titleUrdu: '', coverUrl: '', videos: []
+  });
+
+  const [videoInput, setVideoInput] = useState({
+    title: '', titleUrdu: '', youtubeUrl: ''
+  });
+
+  useEffect(() => {
+    const q = query(collection(db, 'playlists'), orderBy('createdAt', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setPlaylists(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Playlist)));
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleAddVideoToList = () => {
+    if (!videoInput.youtubeUrl || !videoInput.title) {
+      showToast("Please provide video title and URL", "error");
+      return;
+    }
+
+    // Auto-thumbnail logic
+    const getYouTubeID = (url: string) => {
+      const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+      const match = url.match(regExp);
+      return (match && match[2].length === 11) ? match[2] : null;
+    };
+
+    const videoId = getYouTubeID(videoInput.youtubeUrl);
+    if (videoId) {
+      const thumbnailUrl = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
+      
+      const newVideo: Video = {
+        id: Date.now().toString(),
+        title: videoInput.title,
+        titleUrdu: videoInput.titleUrdu,
+        youtubeUrl: videoInput.youtubeUrl,
+        thumbnailUrl,
+        order: playlistForm.videos.length + 1
+      };
+
+      setPlaylistForm({
+        ...playlistForm,
+        videos: [...playlistForm.videos, newVideo]
+      });
+
+      setVideoInput({ title: '', titleUrdu: '', youtubeUrl: '' });
+      showToast("Video added to list!");
+    } else {
+      showToast("Invalid YouTube URL", "error");
+    }
+  };
+
+  const handleRemoveVideoFromList = (id: string) => {
+    setPlaylistForm({
+      ...playlistForm,
+      videos: playlistForm.videos.filter(v => v.id !== id)
+    });
+  };
+
+  const handleSavePlaylist = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isUploading) return;
+    if (!playlistForm.title || !playlistForm.coverUrl) {
+      showToast("Please provide title and cover image", "error");
+      return;
+    }
+
+    const path = 'playlists';
+    try {
+      if (editingPlaylist) {
+        await updateDoc(doc(db, path, editingPlaylist.id), { ...playlistForm });
+        showToast("Playlist updated successfully!");
+      } else {
+        await addDoc(collection(db, path), { ...playlistForm, createdAt: serverTimestamp() });
+        showToast("Playlist created successfully!");
+      }
+      setIsModalOpen(false);
+      setEditingPlaylist(null);
+      setPlaylistForm({ title: '', titleUrdu: '', coverUrl: '', videos: [] });
+    } catch (error) {
+      handleFirestoreError(error, editingPlaylist ? OperationType.UPDATE : OperationType.CREATE, path);
+    }
+  };
+
+  const handleDeletePlaylist = (id: string) => {
+    confirmAction("Delete Playlist", "This will delete the playlist and all its videos.", async () => {
+      await deleteDoc(doc(db, 'playlists', id));
+      showToast("Playlist deleted!");
+    });
+  };
+
+  const activePlaylist = playlists.find(p => p.id === activePlaylistId);
+
+  if (loading) return <LoadingSpinner />;
+
+  return (
+    <div className="space-y-8">
+      <div className="flex justify-between items-center">
+        <h3 className="text-xl font-bold text-stone-900 dark:text-white">Manage Playlists</h3>
+        <button 
+          onClick={() => { 
+            setEditingPlaylist(null); 
+            setPlaylistForm({ title: '', titleUrdu: '', coverUrl: '', videos: [] }); 
+            setIsModalOpen(true); 
+          }}
+          className="bg-orange-600 text-white px-6 py-2 rounded-xl font-bold flex items-center gap-2 shadow-lg shadow-orange-600/20"
+        >
+          <Plus size={20} /> New Playlist
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {playlists.map(playlist => (
+          <div 
+            key={playlist.id} 
+            className={`bg-white dark:bg-stone-900 p-4 rounded-2xl border transition-all cursor-pointer group ${activePlaylistId === playlist.id ? 'border-orange-500 ring-2 ring-orange-500/20' : 'border-stone-200 dark:border-stone-800'}`}
+            onClick={() => setActivePlaylistId(playlist.id)}
+          >
+            <div className="relative aspect-video rounded-xl overflow-hidden mb-4">
+              <img src={playlist.coverUrl || "https://picsum.photos/seed/playlist/800/450"} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+              <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                <button onClick={(e) => { e.stopPropagation(); setEditingPlaylist(playlist); setPlaylistForm({ title: playlist.title, titleUrdu: playlist.titleUrdu, coverUrl: playlist.coverUrl, videos: playlist.videos || [] }); setIsModalOpen(true); }} className="p-2 bg-white/90 dark:bg-stone-900/90 text-blue-500 rounded-lg shadow-lg hover:scale-110 transition-all"><Edit size={16} /></button>
+                <button onClick={(e) => { e.stopPropagation(); handleDeletePlaylist(playlist.id); }} className="p-2 bg-white/90 dark:bg-stone-900/90 text-red-500 rounded-lg shadow-lg hover:scale-110 transition-all"><Trash2 size={16} /></button>
+              </div>
+            </div>
+            <h4 className="font-bold text-stone-900 dark:text-white">{playlist.title}</h4>
+            <p className="text-xs text-stone-500 font-urdu" dir="rtl">{playlist.titleUrdu}</p>
+            <p className="text-[10px] text-stone-400 mt-2 uppercase tracking-widest">{(playlist.videos?.length || 0)} Videos</p>
+          </div>
+        ))}
+      </div>
+
+      {activePlaylist && (
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-stone-50 dark:bg-stone-900/50 p-8 rounded-3xl border border-stone-200 dark:border-stone-800"
+        >
+          <div className="flex justify-between items-center mb-6">
+            <h4 className="text-lg font-bold text-stone-900 dark:text-white">Videos in "{activePlaylist.title}"</h4>
+          </div>
+
+          <div className="space-y-3">
+            {(activePlaylist.videos || []).map((video, idx) => (
+              <div key={video.id} className="bg-white dark:bg-stone-900 p-4 rounded-xl border border-stone-200 dark:border-stone-800 flex items-center justify-between group">
+                <div className="flex items-center gap-4">
+                  <span className="text-stone-400 font-bold w-6">{idx + 1}.</span>
+                  <img src={video.thumbnailUrl} className="w-16 h-9 rounded-lg object-cover" referrerPolicy="no-referrer" />
+                  <div>
+                    <p className="font-bold text-stone-900 dark:text-white text-sm">{video.title}</p>
+                    <p className="text-[10px] text-stone-500 font-urdu" dir="rtl">{video.titleUrdu}</p>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {(!activePlaylist.videos || activePlaylist.videos.length === 0) && (
+              <div className="text-center py-12 text-stone-400 border-2 border-dashed border-stone-200 dark:border-stone-800 rounded-2xl">
+                No videos in this playlist yet.
+              </div>
+            )}
+          </div>
+        </motion.div>
+      )}
+
+      {/* Playlist Modal */}
+      <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={editingPlaylist ? "Edit Playlist" : "New Playlist"}>
+        <form onSubmit={handleSavePlaylist} className="space-y-8 max-h-[80vh] overflow-y-auto pr-4 custom-scrollbar">
+          <div className="space-y-6">
+            <h4 className="text-sm font-bold text-stone-400 uppercase tracking-widest border-b border-stone-100 dark:border-stone-800 pb-2">Basic Information</h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <FormField label="Title (English)" value={playlistForm.title} onChange={(v: any) => setPlaylistForm({...playlistForm, title: v})} />
+              <FormField label="Title (Urdu)" labelUrdu="عنوان" value={playlistForm.titleUrdu} onChange={(v: any) => setPlaylistForm({...playlistForm, titleUrdu: v})} dir="rtl" />
+            </div>
+            <FileUpload 
+              label="Playlist Cover" 
+              currentUrl={playlistForm.coverUrl} 
+              onUpload={(url: any) => setPlaylistForm({...playlistForm, coverUrl: url})} 
+              showToast={showToast}
+              onUploadingStateChange={setIsUploading}
+            />
+          </div>
+
+          <div className="space-y-6">
+            <h4 className="text-sm font-bold text-stone-400 uppercase tracking-widest border-b border-stone-100 dark:border-stone-800 pb-2">Add Videos to Playlist</h4>
+            <div className="bg-stone-50 dark:bg-stone-800/50 p-6 rounded-2xl space-y-4 border border-stone-200 dark:border-stone-700">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <FormField label="Video Title (English)" value={videoInput.title} onChange={(v: any) => setVideoInput({...videoInput, title: v})} />
+                <FormField label="Video Title (Urdu)" labelUrdu="عنوان" value={videoInput.titleUrdu} onChange={(v: any) => setVideoInput({...videoInput, titleUrdu: v})} dir="rtl" />
+              </div>
+              <div className="flex gap-4 items-end">
+                <div className="flex-1">
+                  <FormField label="YouTube URL" value={videoInput.youtubeUrl} onChange={(v: any) => setVideoInput({...videoInput, youtubeUrl: v})} />
+                </div>
+                <button 
+                  type="button"
+                  onClick={handleAddVideoToList}
+                  className="bg-stone-900 dark:bg-white text-white dark:text-black px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:scale-105 transition-all"
+                >
+                  <Plus size={20} /> Add to List
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <h5 className="text-xs font-bold text-stone-500 uppercase tracking-widest">Videos in List ({playlistForm.videos.length})</h5>
+              {playlistForm.videos.map((video, idx) => (
+                <div key={video.id} className="bg-white dark:bg-stone-900 p-3 rounded-xl border border-stone-200 dark:border-stone-800 flex items-center justify-between">
+                  <div className="flex items-center gap-4">
+                    <span className="text-stone-400 font-bold w-6">{idx + 1}.</span>
+                    <img src={video.thumbnailUrl} className="w-12 h-7 rounded object-cover" referrerPolicy="no-referrer" />
+                    <div className="min-w-0">
+                      <p className="font-bold text-stone-900 dark:text-white text-xs truncate">{video.title}</p>
+                    </div>
+                  </div>
+                  <button 
+                    type="button"
+                    onClick={() => handleRemoveVideoFromList(video.id)}
+                    className="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              ))}
+              {playlistForm.videos.length === 0 && (
+                <p className="text-center py-8 text-stone-400 text-sm italic">No videos added to the list yet.</p>
+              )}
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-4 pt-6 border-t border-stone-100 dark:border-stone-800">
+            <button type="button" onClick={() => setIsModalOpen(false)} className="px-6 py-2 font-bold text-stone-500">Cancel</button>
+            <button 
+              type="submit" 
+              disabled={isUploading}
+              className={`bg-orange-600 text-white px-8 py-2 rounded-xl font-bold shadow-lg shadow-orange-600/20 ${isUploading ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              {isUploading ? 'Uploading...' : 'Save Playlist'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+    </div>
+  );
+};
+
+const AdminHadith = ({ showToast, confirmAction, settings }: any) => {
+  const [items, setItems] = useState<Hadith[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingItem, setEditingItem] = useState<Hadith | null>(null);
+  const [formData, setFormData] = useState({
+    arabic: '', english: '', urdu: '', reference: '', referenceUrdu: '',
+    arabicFont: '', englishFont: '', urduFont: ''
+  });
+
+  const englishFonts = [
+    { name: 'Default', value: '' },
+    { name: 'Inter', value: "'Inter', sans-serif" },
+    { name: 'Playfair Display', value: "'Playfair Display', serif" },
+    ...(settings?.customFonts || []).filter((f: any) => f.type === 'english').map((f: any) => ({ name: f.name, value: `'${f.family}', sans-serif` }))
+  ];
+
+  const urduFonts = [
+    { name: 'Default', value: '' },
+    { name: 'Jameel Noori Nastaleeq', value: "'Jameel Noori Nastaleeq', serif" },
+    { name: 'Noto Nastaliq Urdu', value: "'Noto Nastaliq Urdu', serif" },
+    { name: 'Al Qalam Quran Majeed', value: "'Al Qalam Quran Majeed Web Regular', serif" },
+    ...(settings?.customFonts || []).filter((f: any) => f.type === 'urdu').map((f: any) => ({ name: f.name, value: `'${f.family}', sans-serif` }))
+  ];
+
+  useEffect(() => {
+    const q = query(collection(db, 'hadith'), orderBy('createdAt', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setItems(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Hadith)));
+      setLoading(false);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'hadith');
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const path = 'hadith';
+    try {
+      if (editingItem) {
+        await updateDoc(doc(db, path, editingItem.id), { ...formData });
+        showToast("Hadith updated successfully!");
+      } else {
+        await addDoc(collection(db, path), { ...formData, createdAt: serverTimestamp() });
+        showToast("Hadith added successfully!");
+      }
+      setIsModalOpen(false);
+      setEditingItem(null);
+      setFormData({ arabic: '', english: '', urdu: '', reference: '', referenceUrdu: '' });
+    } catch (error) {
+      handleFirestoreError(error, editingItem ? OperationType.UPDATE : OperationType.CREATE, path);
+      showToast("Operation failed. Check permissions.", "error");
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    confirmAction(
+      "Delete Hadith",
+      "Are you sure you want to delete this Hadith? This action cannot be undone.",
+      async () => {
+        const path = 'hadith';
+        try {
+          await deleteDoc(doc(db, path, id));
+          showToast("Hadith deleted successfully!");
+        } catch (error) {
+          handleFirestoreError(error, OperationType.DELETE, path);
+          showToast("Delete failed. Check permissions.", "error");
+        }
+      }
+    );
+  };
+
+  if (loading) return <LoadingSpinner />;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <h3 className="text-xl font-bold text-stone-900 dark:text-white">Manage Hadith</h3>
+        <button onClick={() => { setEditingItem(null); setFormData({ arabic: '', english: '', urdu: '', reference: '', referenceUrdu: '' }); setIsModalOpen(true); }} className="bg-orange-600 text-white px-6 py-2 rounded-xl font-bold flex items-center gap-2 shadow-lg shadow-orange-600/20">
+          <Plus size={20} /> Add Hadith
+        </button>
+      </div>
+
+      <div className="space-y-4">
+        {items.map(item => (
+          <div key={item.id} className="bg-white dark:bg-stone-900 p-6 rounded-2xl border border-stone-200 dark:border-stone-800 shadow-sm group relative">
+            <div className="space-y-4">
+              <p className="font-arabic text-2xl text-right text-stone-900 dark:text-white leading-relaxed" dir="rtl">{item.arabic}</p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-stone-100 dark:border-stone-800">
+                <div>
+                  <p className="text-xs font-bold text-orange-600 uppercase tracking-wider mb-2">English</p>
+                  <p className="text-sm text-stone-600 dark:text-stone-400 leading-relaxed">{item.english}</p>
+                  <p className="text-xs text-stone-400 mt-2 italic">— {item.reference}</p>
+                </div>
+                <div dir="rtl">
+                  <p className="text-xs font-bold text-orange-600 uppercase tracking-wider mb-2 font-urdu">اردو</p>
+                  <p className="text-lg text-stone-600 dark:text-stone-400 leading-relaxed font-urdu">{item.urdu}</p>
+                  <p className="text-xs text-stone-400 mt-2 italic font-urdu">— {item.referenceUrdu}</p>
+                </div>
+              </div>
+            </div>
+            <div className="absolute top-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+              <button onClick={() => { setEditingItem(item); setFormData(item); setIsModalOpen(true); }} className="p-2 bg-stone-100 dark:bg-stone-800 text-blue-500 rounded-lg hover:scale-110 transition-all"><Edit size={16} /></button>
+              <button onClick={() => handleDelete(item.id)} className="p-2 bg-stone-100 dark:bg-stone-800 text-red-500 rounded-lg hover:scale-110 transition-all"><Trash2 size={16} /></button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={editingItem ? "Edit Hadith" : "Add Hadith"}>
+        <form onSubmit={handleSave} className="space-y-6">
+          <div className="space-y-2">
+            <FormField label="Arabic Text" labelUrdu="عربی متن" isTextArea value={formData.arabic} onChange={(v: any) => setFormData({...formData, arabic: v})} dir="rtl" />
+            <select 
+              value={formData.arabicFont} 
+              onChange={(e) => setFormData({...formData, arabicFont: e.target.value})}
+              className="w-full px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-black text-stone-500"
+            >
+              {urduFonts.map(f => <option key={f.value} value={f.value}>{f.name} Font</option>)}
+            </select>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="space-y-2">
+              <FormField label="English Translation" isTextArea value={formData.english} onChange={(v: any) => setFormData({...formData, english: v})} />
+              <select 
+                value={formData.englishFont} 
+                onChange={(e) => setFormData({...formData, englishFont: e.target.value})}
+                className="w-full px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-black text-stone-500"
+              >
+                {englishFonts.map(f => <option key={f.value} value={f.value}>{f.name} Font</option>)}
+              </select>
+            </div>
+            <div className="space-y-2">
+              <FormField label="Urdu Translation" labelUrdu="اردو ترجمہ" isTextArea value={formData.urdu} onChange={(v: any) => setFormData({...formData, urdu: v})} dir="rtl" />
+              <select 
+                value={formData.urduFont} 
+                onChange={(e) => setFormData({...formData, urduFont: e.target.value})}
+                className="w-full px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-black text-stone-500"
+              >
+                {urduFonts.map(f => <option key={f.value} value={f.value}>{f.name} Font</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <FormField label="Reference (English)" value={formData.reference} onChange={(v: any) => setFormData({...formData, reference: v})} />
+            <FormField label="Reference (Urdu)" labelUrdu="حوالہ" value={formData.referenceUrdu} onChange={(v: any) => setFormData({...formData, referenceUrdu: v})} dir="rtl" />
+          </div>
+          <div className="flex justify-end gap-4 pt-4">
+            <button type="button" onClick={() => setIsModalOpen(false)} className="px-6 py-2 font-bold text-stone-500">Cancel</button>
+            <button type="submit" className="bg-orange-600 text-white px-8 py-2 rounded-xl font-bold shadow-lg shadow-orange-600/20">Save Hadith</button>
+          </div>
+        </form>
+      </Modal>
+    </div>
+  );
+};
+
+const AdminQuran = ({ showToast, confirmAction, settings }: any) => {
+  const [items, setItems] = useState<QuranVerse[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingItem, setEditingItem] = useState<QuranVerse | null>(null);
+  const [formData, setFormData] = useState({
+    arabic: '', english: '', urdu: '', surahName: '', surahNameUrdu: '', surahNumber: 1, verseNumber: '',
+    arabicFont: '', englishFont: '', urduFont: ''
+  });
+
+  const englishFonts = [
+    { name: 'Default', value: '' },
+    { name: 'Inter', value: "'Inter', sans-serif" },
+    { name: 'Playfair Display', value: "'Playfair Display', serif" },
+    ...(settings?.customFonts || []).filter((f: any) => f.type === 'english').map((f: any) => ({ name: f.name, value: `'${f.family}', sans-serif` }))
+  ];
+
+  const urduFonts = [
+    { name: 'Default', value: '' },
+    { name: 'Jameel Noori Nastaleeq', value: "'Jameel Noori Nastaleeq', serif" },
+    { name: 'Noto Nastaliq Urdu', value: "'Noto Nastaliq Urdu', serif" },
+    { name: 'Al Qalam Quran Majeed', value: "'Al Qalam Quran Majeed Web Regular', serif" },
+    ...(settings?.customFonts || []).filter((f: any) => f.type === 'urdu').map((f: any) => ({ name: f.name, value: `'${f.family}', sans-serif` }))
+  ];
+
+  useEffect(() => {
+    const q = query(collection(db, 'quran_verses'), orderBy('createdAt', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setItems(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as QuranVerse)));
+      setLoading(false);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'quran_verses');
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const path = 'quran_verses';
+    try {
+      if (editingItem) {
+        await updateDoc(doc(db, path, editingItem.id), { ...formData });
+        showToast("Verse updated successfully!");
+      } else {
+        await addDoc(collection(db, path), { ...formData, createdAt: serverTimestamp() });
+        showToast("Verse added successfully!");
+      }
+      setIsModalOpen(false);
+      setEditingItem(null);
+      setFormData({ arabic: '', english: '', urdu: '', surahName: '', surahNameUrdu: '', surahNumber: 1, verseNumber: '' });
+    } catch (error) {
+      handleFirestoreError(error, editingItem ? OperationType.UPDATE : OperationType.CREATE, path);
+      showToast("Operation failed. Check permissions.", "error");
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    confirmAction(
+      "Delete Verse",
+      "Are you sure you want to delete this verse? This action cannot be undone.",
+      async () => {
+        const path = 'quran_verses';
+        try {
+          await deleteDoc(doc(db, path, id));
+          showToast("Verse deleted successfully!");
+        } catch (error) {
+          handleFirestoreError(error, OperationType.DELETE, path);
+          showToast("Delete failed. Check permissions.", "error");
+        }
+      }
+    );
+  };
+
+  if (loading) return <LoadingSpinner />;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <h3 className="text-xl font-bold text-stone-900 dark:text-white">Manage Quran Verses</h3>
+        <button onClick={() => { setEditingItem(null); setFormData({ arabic: '', english: '', urdu: '', surahName: '', surahNameUrdu: '', surahNumber: 1, verseNumber: '' }); setIsModalOpen(true); }} className="bg-orange-600 text-white px-6 py-2 rounded-xl font-bold flex items-center gap-2 shadow-lg shadow-orange-600/20">
+          <Plus size={20} /> Add Verse
+        </button>
+      </div>
+
+      <div className="bg-white dark:bg-stone-900 rounded-2xl border border-stone-200 dark:border-stone-800 overflow-hidden shadow-sm">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-stone-50 dark:bg-stone-800/50 border-b border-stone-200 dark:border-stone-800">
+                <th className="px-6 py-4 text-sm font-bold text-stone-900 dark:text-white">Surah & Verse</th>
+                <th className="px-6 py-4 text-sm font-bold text-stone-900 dark:text-white text-right">Arabic Text</th>
+                <th className="px-6 py-4 text-sm font-bold text-stone-900 dark:text-white">Translations</th>
+                <th className="px-6 py-4 text-sm font-bold text-stone-900 dark:text-white text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-stone-100 dark:divide-stone-800">
+              {items.map(item => (
+                <tr key={item.id} className="hover:bg-stone-50 dark:hover:bg-stone-800/30 transition-colors group">
+                  <td className="px-6 py-4">
+                    <div className="font-bold text-stone-900 dark:text-white">{item.surahName} ({item.surahNumber})</div>
+                    <div className="text-xs text-stone-500">Verse {item.verseNumber}</div>
+                  </td>
+                  <td className="px-6 py-4 text-right">
+                    <p className="font-arabic text-lg text-stone-900 dark:text-white line-clamp-1" dir="rtl">{item.arabic}</p>
+                  </td>
+                  <td className="px-6 py-4">
+                    <p className="text-xs text-stone-500 line-clamp-1">{item.english}</p>
+                    <p className="text-xs text-stone-500 line-clamp-1 font-urdu" dir="rtl">{item.urdu}</p>
+                  </td>
+                  <td className="px-6 py-4 text-right">
+                    <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button onClick={() => { setEditingItem(item); setFormData(item); setIsModalOpen(true); }} className="p-2 text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-colors"><Edit size={18} /></button>
+                      <button onClick={() => handleDelete(item.id)} className="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"><Trash2 size={18} /></button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={editingItem ? "Edit Verse" : "Add Verse"}>
+        <form onSubmit={handleSave} className="space-y-6">
+          <div className="space-y-2">
+            <FormField label="Arabic Text" labelUrdu="عربی متن" isTextArea value={formData.arabic} onChange={(v: any) => setFormData({...formData, arabic: v})} dir="rtl" />
+            <select 
+              value={formData.arabicFont} 
+              onChange={(e) => setFormData({...formData, arabicFont: e.target.value})}
+              className="w-full px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-black text-stone-500"
+            >
+              {urduFonts.map(f => <option key={f.value} value={f.value}>{f.name} Font</option>)}
+            </select>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="space-y-2">
+              <FormField label="English Translation" isTextArea value={formData.english} onChange={(v: any) => setFormData({...formData, english: v})} />
+              <select 
+                value={formData.englishFont} 
+                onChange={(e) => setFormData({...formData, englishFont: e.target.value})}
+                className="w-full px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-black text-stone-500"
+              >
+                {englishFonts.map(f => <option key={f.value} value={f.value}>{f.name} Font</option>)}
+              </select>
+            </div>
+            <div className="space-y-2">
+              <FormField label="Urdu Translation" labelUrdu="اردو ترجمہ" isTextArea value={formData.urdu} onChange={(v: any) => setFormData({...formData, urdu: v})} dir="rtl" />
+              <select 
+                value={formData.urduFont} 
+                onChange={(e) => setFormData({...formData, urduFont: e.target.value})}
+                className="w-full px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-black text-stone-500"
+              >
+                {urduFonts.map(f => <option key={f.value} value={f.value}>{f.name} Font</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            <FormField label="Surah Name (English)" value={formData.surahName} onChange={(v: any) => setFormData({...formData, surahName: v})} />
+            <FormField label="Surah Name (Urdu)" labelUrdu="سورہ کا نام" value={formData.surahNameUrdu} onChange={(v: any) => setFormData({...formData, surahNameUrdu: v})} dir="rtl" />
+            <FormField label="Surah Number" type="number" value={formData.surahNumber} onChange={(v: any) => setFormData({...formData, surahNumber: parseInt(v)})} />
+            <FormField label="Verse Number" value={formData.verseNumber} onChange={(v: any) => setFormData({...formData, verseNumber: v})} />
+          </div>
+          <div className="flex justify-end gap-4 pt-4">
+            <button type="button" onClick={() => setIsModalOpen(false)} className="px-6 py-2 font-bold text-stone-500">Cancel</button>
+            <button type="submit" className="bg-orange-600 text-white px-8 py-2 rounded-xl font-bold shadow-lg shadow-orange-600/20">Save Verse</button>
+          </div>
+        </form>
+      </Modal>
+    </div>
+  );
+};
+
+const AdminBooks = ({ showToast, confirmAction }: any) => {
+  const [items, setItems] = useState<BookEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingItem, setEditingItem] = useState<BookEntry | null>(null);
+  const [formData, setFormData] = useState({
+    title: '', titleUrdu: '', description: '', descriptionUrdu: '', coverUrl: '', pdfUrl: ''
+  });
+
+  useEffect(() => {
+    const q = query(collection(db, 'books'), orderBy('createdAt', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setItems(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as BookEntry)));
+      setLoading(false);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'books');
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const path = 'books';
+    try {
+      if (editingItem) {
+        await updateDoc(doc(db, path, editingItem.id), { ...formData });
+        showToast("Book updated successfully!");
+      } else {
+        await addDoc(collection(db, path), { ...formData, createdAt: serverTimestamp() });
+        showToast("Book added successfully!");
+      }
+      setIsModalOpen(false);
+      setEditingItem(null);
+      setFormData({ title: '', titleUrdu: '', description: '', descriptionUrdu: '', coverUrl: '', pdfUrl: '' });
+    } catch (error) {
+      handleFirestoreError(error, editingItem ? OperationType.UPDATE : OperationType.CREATE, path);
+      showToast("Operation failed. Check permissions.", "error");
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    confirmAction(
+      "Delete Book",
+      "Are you sure you want to delete this book? This action cannot be undone.",
+      async () => {
+        const path = 'books';
+        try {
+          await deleteDoc(doc(db, path, id));
+          showToast("Book deleted successfully!");
+        } catch (error) {
+          handleFirestoreError(error, OperationType.DELETE, path);
+          showToast("Delete failed. Check permissions.", "error");
+        }
+      }
+    );
+  };
+
+  if (loading) return <LoadingSpinner />;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <h3 className="text-xl font-bold text-stone-900 dark:text-white">Manage Books</h3>
+        <button onClick={() => { setEditingItem(null); setFormData({ title: '', titleUrdu: '', description: '', descriptionUrdu: '', coverUrl: '', pdfUrl: '' }); setIsModalOpen(true); }} className="bg-orange-600 text-white px-6 py-2 rounded-xl font-bold flex items-center gap-2 shadow-lg shadow-orange-600/20">
+          <Plus size={20} /> Add Book
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {items.length > 0 ? items.map(item => (
+          <div key={item.id} className="bg-white dark:bg-stone-900 p-4 rounded-2xl border border-stone-200 dark:border-stone-800 shadow-sm group">
+            <div className="relative overflow-hidden rounded-xl mb-4 h-48">
+              {item.coverUrl ? (
+                <img src={item.coverUrl} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" referrerPolicy="no-referrer" />
+              ) : (
+                <div className="w-full h-full bg-stone-100 dark:bg-stone-800 flex items-center justify-center text-stone-400">
+                  <Book size={48} />
+                </div>
+              )}
+              <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                <button onClick={() => { setEditingItem(item); setFormData(item); setIsModalOpen(true); }} className="p-2 bg-white/90 dark:bg-stone-900/90 text-blue-500 rounded-lg shadow-lg hover:scale-110 transition-all"><Edit size={16} /></button>
+                <button onClick={() => handleDelete(item.id)} className="p-2 bg-white/90 dark:bg-stone-900/90 text-red-500 rounded-lg shadow-lg hover:scale-110 transition-all"><Trash2 size={16} /></button>
+              </div>
+            </div>
+            <h4 className="font-bold text-stone-900 dark:text-white mb-1 line-clamp-1">{item.title}</h4>
+            <p className="text-xs text-stone-500 font-urdu line-clamp-1" dir="rtl">{item.titleUrdu}</p>
+          </div>
+        )) : (
+          <div className="col-span-full py-20 text-center bg-stone-50 dark:bg-stone-900/50 rounded-3xl border-2 border-dashed border-stone-200 dark:border-stone-800">
+            <div className="w-16 h-16 bg-stone-100 dark:bg-stone-800 rounded-full flex items-center justify-center mx-auto mb-4 text-stone-400">
+              <Book size={32} />
+            </div>
+            <h4 className="text-lg font-bold text-stone-900 dark:text-white mb-2">No Books Found</h4>
+            <p className="text-stone-500 max-w-xs mx-auto">Upload your books and publications in PDF format.</p>
+          </div>
+        )}
+      </div>
+
+      <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={editingItem ? "Edit Book" : "Add Book"}>
+        <form onSubmit={handleSave} className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <FormField label="Title (English)" value={formData.title} onChange={(v: any) => setFormData({...formData, title: v})} />
+            <FormField label="Title (Urdu)" labelUrdu="عنوان" value={formData.titleUrdu} onChange={(v: any) => setFormData({...formData, titleUrdu: v})} dir="rtl" />
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <FileUpload label="Book Cover" currentUrl={formData.coverUrl} onUpload={(url: any) => setFormData({...formData, coverUrl: url})} showToast={showToast} />
+            <FileUpload label="PDF File" type="pdf" accept="application/pdf" currentUrl={formData.pdfUrl} onUpload={(url: any) => setFormData({...formData, pdfUrl: url})} showToast={showToast} />
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <FormField label="Description (English)" isTextArea value={formData.description} onChange={(v: any) => setFormData({...formData, description: v})} />
+            <FormField label="Description (Urdu)" labelUrdu="تفصیل" isTextArea value={formData.descriptionUrdu} onChange={(v: any) => setFormData({...formData, descriptionUrdu: v})} dir="rtl" />
+          </div>
+          <div className="flex justify-end gap-4 pt-4">
+            <button type="button" onClick={() => setIsModalOpen(false)} className="px-6 py-2 font-bold text-stone-500">Cancel</button>
+            <button type="submit" className="bg-orange-600 text-white px-8 py-2 rounded-xl font-bold shadow-lg shadow-orange-600/20">Save Book</button>
+          </div>
+        </form>
+      </Modal>
+    </div>
+  );
+};
+
+const AdminBio = ({ showToast }: any) => {
+  const [formData, setFormData] = useState({
+    title: '', titleUrdu: '', content: '', contentUrdu: '', imageUrl: ''
+  });
+  const [loading, setLoading] = useState(true);
+  const [isUploading, setIsUploading] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(doc(db, 'bio', 'site_profile'), (snapshot) => {
+      if (snapshot.exists()) {
+        setFormData(snapshot.data() as any);
+      }
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isUploading) return;
+    try {
+      await setDoc(doc(db, 'bio', 'site_profile'), { ...formData, updatedAt: serverTimestamp() });
+      showToast("Biography updated successfully!");
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, 'bio/site_profile');
+    }
+  };
+
+  if (loading) return <LoadingSpinner />;
+
+  return (
+    <div className="space-y-8">
+      <div className="flex justify-between items-center">
+        <h3 className="text-xl font-bold text-stone-900 dark:text-white">Biography Settings</h3>
+      </div>
+
+      <form onSubmit={handleSave} className="max-w-4xl space-y-8">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          <div className="space-y-6">
+            <FormField label="Main Title (English)" value={formData.title} onChange={(v: any) => setFormData({...formData, title: v})} />
+            <FormField label="Main Title (Urdu)" labelUrdu="عنوان" value={formData.titleUrdu} onChange={(v: any) => setFormData({...formData, titleUrdu: v})} dir="rtl" />
+            <FileUpload 
+              label="Biography Image" 
+              currentUrl={formData.imageUrl} 
+              onUpload={(url: any) => setFormData({...formData, imageUrl: url})} 
+              showToast={showToast}
+              onUploadingStateChange={setIsUploading}
+            />
+          </div>
+          <div className="space-y-6">
+            <FormField label="Biography Content (English)" isTextArea value={formData.content} onChange={(v: any) => setFormData({...formData, content: v})} />
+            <FormField label="Biography Content (Urdu)" labelUrdu="مواد" isTextArea value={formData.contentUrdu} onChange={(v: any) => setFormData({...formData, contentUrdu: v})} dir="rtl" />
+          </div>
+        </div>
+        
+        <div className="flex justify-end">
+          <button 
+            type="submit" 
+            disabled={isUploading}
+            className={`bg-orange-600 text-white px-12 py-4 rounded-2xl font-bold shadow-xl shadow-orange-600/20 hover:scale-105 active:scale-95 transition-all ${isUploading ? 'opacity-50 cursor-not-allowed' : ''}`}
+          >
+            {isUploading ? 'Uploading...' : 'Save Biography'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+};
+
+const AdminAssistant = ({ showToast }: any) => {
+  const [settings, setSettings] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(doc(db, 'settings', 'assistant'), (snapshot) => {
+      if (snapshot.exists()) {
+        setSettings(snapshot.data());
+      } else {
+        setSettings({
+          name: 'Mufti Assistant',
+          role: 'Islamic Scholar Assistant',
+          welcomeMessage: 'How can I help you today?',
+          welcomeMessageUrdu: 'میں آج آپ کی کیسے مدد کر سکتا ہوں؟',
+          systemInstructions: 'You are a helpful Islamic assistant...',
+          voice: 'Kore',
+          mode: 'text'
+        });
+      }
+      setLoading(false);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'settings/assistant');
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    const path = 'settings/assistant';
+    try {
+      await setDoc(doc(db, 'settings', 'assistant'), settings, { merge: true });
+      showToast("Assistant settings saved!");
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, path);
+      showToast("Save failed. Check permissions.", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <LoadingSpinner />;
+
+  return (
+    <div className="max-w-4xl mx-auto bg-white dark:bg-stone-900 p-8 rounded-3xl border border-stone-200 dark:border-stone-800 shadow-xl">
+      <div className="flex items-center gap-4 mb-8">
+        <div className="w-12 h-12 bg-orange-500/10 rounded-2xl flex items-center justify-center text-orange-500">
+          <Bot size={24} />
+        </div>
+        <div>
+          <h3 className="text-xl font-bold text-stone-900 dark:text-white">AI Assistant Settings</h3>
+          <p className="text-sm text-stone-500">Configure your AI scholar's personality and behavior</p>
+        </div>
+      </div>
+      
+      <form onSubmit={handleSave} className="space-y-8">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <FormField label="Assistant Name" value={settings.name} onChange={(v: any) => setSettings({...settings, name: v})} />
+          <FormField label="Assistant Role" value={settings.role} onChange={(v: any) => setSettings({...settings, role: v})} />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <FormField label="Welcome Message (English)" value={settings.welcomeMessage} onChange={(v: any) => setSettings({...settings, welcomeMessage: v})} />
+          <FormField label="Welcome Message (Urdu)" labelUrdu="خوش آمدید پیغام" value={settings.welcomeMessageUrdu} onChange={(v: any) => setSettings({...settings, welcomeMessageUrdu: v})} dir="rtl" />
+        </div>
+        <FormField label="System Instructions" isTextArea value={settings.systemInstructions} onChange={(v: any) => setSettings({...settings, systemInstructions: v})} />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="space-y-2">
+            <label className="text-xs font-bold text-stone-500 uppercase tracking-widest">Voice Selection</label>
+            <select value={settings.voice} onChange={(e) => setSettings({...settings, voice: e.target.value})} className="w-full px-4 py-3 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-black text-stone-900 dark:text-white focus:ring-2 focus:ring-orange-500 outline-none transition-all">
+              <option value="Kore">Kore (Female)</option>
+              <option value="Fenrir">Fenrir (Male)</option>
+              <option value="Puck">Puck (Male)</option>
+              <option value="Charon">Charon (Male)</option>
+              <option value="Zephyr">Zephyr (Female)</option>
+            </select>
+          </div>
+          <div className="space-y-2">
+            <label className="text-xs font-bold text-stone-500 uppercase tracking-widest">Response Mode</label>
+            <select value={settings.mode} onChange={(e) => setSettings({...settings, mode: e.target.value})} className="w-full px-4 py-3 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-black text-stone-900 dark:text-white focus:ring-2 focus:ring-orange-500 outline-none transition-all">
+              <option value="text">Text Only</option>
+              <option value="audio">Audio & Text</option>
+            </select>
+          </div>
+        </div>
+        <div className="flex justify-end pt-4 border-t border-stone-100 dark:border-stone-800">
+          <button type="submit" disabled={saving} className="bg-orange-600 text-white px-10 py-3 rounded-xl font-bold flex items-center gap-2 shadow-lg shadow-orange-600/20 hover:scale-105 transition-transform disabled:opacity-50 disabled:hover:scale-100">
+            <Save size={20} /> {saving ? 'Saving...' : 'Save Settings'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+};
+
+const AdminSettings = ({ showToast }: any) => {
+  const [settings, setSettings] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [uploadingFont, setUploadingFont] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(doc(db, 'config', 'main'), (snapshot) => {
+      if (snapshot.exists()) {
+        setSettings(snapshot.data());
+      } else {
+        setSettings({
+          headingFont: "'Inter', sans-serif",
+          bodyFont: "'Inter', sans-serif",
+          urduFont: "'Noto Naskh Arabic', serif",
+          customFonts: []
+        });
+      }
+      setLoading(false);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'config/main');
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    const path = 'config/main';
+    try {
+      await setDoc(doc(db, 'config', 'main'), settings, { merge: true });
+      showToast("Site settings saved!");
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, path);
+      showToast("Save failed. Check permissions.", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleFontUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: 'english' | 'urdu') => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    if (!['ttf', 'otf', 'woff', 'woff2'].includes(extension || '')) {
+      showToast("Please upload a valid font file (.ttf, .otf, .woff)", "error");
+      return;
+    }
+
+    setUploadingFont(true);
+    try {
+      const storageRef = ref(storage, `fonts/${Date.now()}_${file.name}`);
+      const uploadTask = uploadBytesResumable(storageRef, file);
+      
+      uploadTask.on('state_changed',
+        (snapshot) => {
+          const p = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+          console.log(`Font upload progress: ${p}%`);
+        },
+        (error) => {
+          console.error("Font upload failed:", error);
+          alert(`Font upload failed: ${error.message} (Code: ${error.code})`);
+          showToast("Font upload failed", "error");
+          setUploadingFont(false);
+        },
+        async () => {
+          try {
+            const url = await getDownloadURL(uploadTask.snapshot.ref);
+            const familyName = file.name.split('.')[0].replace(/[^a-zA-Z0-9]/g, '-');
+            
+            const newFont = { name: file.name, url, family: familyName, type };
+            const updatedFonts = [...(settings.customFonts || []), newFont];
+            
+            setSettings({ ...settings, customFonts: updatedFonts });
+            showToast("Font uploaded successfully!");
+          } catch (urlError: any) {
+            console.error("Error getting font download URL:", urlError);
+            alert(`Error getting font download URL: ${urlError.message}`);
+          } finally {
+            setUploadingFont(false);
+          }
+        }
+      );
+    } catch (error: any) {
+      console.error("Font upload initialization failed:", error);
+      alert(`Font upload initialization failed: ${error.message}`);
+      showToast("Font upload failed", "error");
+      setUploadingFont(false);
+    }
+  };
+
+  const removeFont = (index: number) => {
+    const updatedFonts = [...settings.customFonts];
+    updatedFonts.splice(index, 1);
+    setSettings({ ...settings, customFonts: updatedFonts });
+  };
+
+  if (loading || !settings) return <LoadingSpinner />;
+
+  const fontOptions = [
+    { name: 'Inter', value: "'Inter', sans-serif" },
+    { name: 'Playfair Display', value: "'Playfair Display', serif" },
+    { name: 'Space Grotesk', value: "'Space Grotesk', sans-serif" },
+    { name: 'Outfit', value: "'Outfit', sans-serif" },
+    { name: 'JetBrains Mono', value: "'JetBrains Mono', monospace" },
+    { name: 'Noto Naskh Arabic', value: "'Noto Naskh Arabic', serif" },
+    ...(settings.customFonts || []).map((f: any) => ({ name: f.name, value: `'${f.family}', sans-serif` }))
+  ];
+
+  return (
+    <div className="max-w-4xl mx-auto space-y-8">
+      <div className="bg-white dark:bg-stone-900 p-8 rounded-3xl border border-stone-200 dark:border-stone-800 shadow-xl">
+        <h3 className="text-xl font-bold text-stone-900 dark:text-white mb-8 flex items-center gap-2">
+          <Settings size={24} className="text-orange-500" /> Font Management
+        </h3>
+        
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
+          <div className="space-y-4">
+            <label className="block text-xs font-bold text-stone-500 uppercase tracking-widest">Global Heading Font</label>
+            <select 
+              value={settings.headingFont}
+              onChange={(e) => setSettings({...settings, headingFont: e.target.value})}
+              className="w-full px-4 py-3 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-black text-stone-900 dark:text-white focus:ring-2 focus:ring-orange-500/20 outline-none transition-all"
+            >
+              {fontOptions.map(f => <option key={f.value} value={f.value}>{f.name}</option>)}
+            </select>
+          </div>
+          <div className="space-y-4">
+            <label className="block text-xs font-bold text-stone-500 uppercase tracking-widest">Global Body Font</label>
+            <select 
+              value={settings.bodyFont}
+              onChange={(e) => setSettings({...settings, bodyFont: e.target.value})}
+              className="w-full px-4 py-3 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-black text-stone-900 dark:text-white focus:ring-2 focus:ring-orange-500/20 outline-none transition-all"
+            >
+              {fontOptions.map(f => <option key={f.value} value={f.value}>{f.name}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div className="space-y-6">
+          <label className="block text-xs font-bold text-stone-500 uppercase tracking-widest">Upload Custom Fonts (.ttf, .otf)</label>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="border-2 border-dashed border-stone-200 dark:border-stone-800 rounded-2xl p-6 text-center hover:border-orange-500/50 transition-colors">
+              <input type="file" id="font-upload-en" className="hidden" accept=".ttf,.otf,.woff,.woff2" onChange={(e) => handleFontUpload(e, 'english')} disabled={uploadingFont} />
+              <label htmlFor="font-upload-en" className="cursor-pointer flex flex-col items-center gap-2">
+                <div className="w-10 h-10 bg-orange-500/10 rounded-full flex items-center justify-center text-orange-500">
+                  <Upload size={20} />
+                </div>
+                <span className="text-[10px] font-bold text-stone-600 dark:text-stone-400 uppercase tracking-widest">English Font</span>
+              </label>
+            </div>
+            <div className="border-2 border-dashed border-stone-200 dark:border-stone-800 rounded-2xl p-6 text-center hover:border-orange-500/50 transition-colors">
+              <input type="file" id="font-upload-ur" className="hidden" accept=".ttf,.otf,.woff,.woff2" onChange={(e) => handleFontUpload(e, 'urdu')} disabled={uploadingFont} />
+              <label htmlFor="font-upload-ur" className="cursor-pointer flex flex-col items-center gap-2">
+                <div className="w-10 h-10 bg-orange-500/10 rounded-full flex items-center justify-center text-orange-500">
+                  <Upload size={20} />
+                </div>
+                <span className="text-[10px] font-bold text-stone-600 dark:text-stone-400 uppercase tracking-widest">Urdu Font</span>
+              </label>
+            </div>
+          </div>
+
+          {settings.customFonts?.length > 0 && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {settings.customFonts.map((font: any, index: number) => (
+                <div key={font.family} className="flex items-center justify-between p-4 bg-stone-50 dark:bg-stone-800/50 rounded-xl border border-stone-200 dark:border-stone-800">
+                  <div className="flex items-center gap-3">
+                    <BookOpen size={18} className="text-orange-500" />
+                    <div className="flex flex-col">
+                      <span className="text-sm font-medium text-stone-900 dark:text-white truncate max-w-[150px]">{font.name}</span>
+                      <span className="text-[8px] uppercase text-orange-500 font-bold tracking-widest">{font.type}</span>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => removeFont(index)}
+                    className="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="mt-12 pt-8 border-t border-stone-200 dark:border-stone-800 flex justify-end">
+          <button 
+            onClick={handleSave}
+            disabled={saving}
+            className="bg-orange-600 text-white px-10 py-3 rounded-xl font-bold flex items-center gap-2 shadow-lg shadow-orange-600/20"
+          >
+            <Save size={20} /> {saving ? 'Saving...' : 'Apply Global Settings'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const AdminHome = ({ showToast }: any) => {
+  const [settings, setSettings] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(doc(db, 'config', 'main'), (snapshot) => {
+      if (snapshot.exists()) {
+        setSettings(snapshot.data());
+      }
+      setLoading(false);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'config/main');
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    const path = 'config/main';
+    try {
+      await setDoc(doc(db, 'config', 'main'), settings, { merge: true });
+      showToast("Home content saved!");
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, path);
+      showToast("Save failed. Check permissions.", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading || !settings) return <LoadingSpinner />;
+
+  return (
+    <div className="max-w-4xl mx-auto bg-white dark:bg-stone-900 p-8 rounded-3xl border border-stone-200 dark:border-stone-800 shadow-xl">
+      <div className="flex items-center gap-4 mb-8">
+        <div className="w-12 h-12 bg-orange-500/10 rounded-2xl flex items-center justify-center text-orange-500">
+          <HomeIcon size={24} />
+        </div>
+        <div>
+          <h3 className="text-xl font-bold text-stone-900 dark:text-white">Homepage Content</h3>
+          <p className="text-sm text-stone-500">Customize your website's hero section and introduction</p>
+        </div>
+      </div>
+
+      <form onSubmit={handleSave} className="space-y-8">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <FormField label="Hero Heading (English)" value={settings.homeHeading} onChange={(v: any) => setSettings({...settings, homeHeading: v})} />
+          <FormField label="Hero Heading (Urdu)" labelUrdu="ہیرو سرخی" value={settings.homeHeadingUrdu} onChange={(v: any) => setSettings({...settings, homeHeadingUrdu: v})} dir="rtl" />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <FormField label="Hero Subheading (English)" value={settings.homeSubheading} onChange={(v: any) => setSettings({...settings, homeSubheading: v})} />
+          <FormField label="Hero Subheading (Urdu)" labelUrdu="ہیرو ذیلی سرخی" value={settings.homeSubheadingUrdu} onChange={(v: any) => setSettings({...settings, homeSubheadingUrdu: v})} dir="rtl" />
+        </div>
+        <FileUpload label="Hero Image" currentUrl={settings.homeImageUrl} onUpload={(url: any) => setSettings({...settings, homeImageUrl: url})} showToast={showToast} />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <FormField label="Intro Text (English)" isTextArea value={settings.homeText} onChange={(v: any) => setSettings({...settings, homeText: v})} />
+          <FormField label="Intro Text (Urdu)" labelUrdu="تعارفی متن" isTextArea value={settings.homeTextUrdu} onChange={(v: any) => setSettings({...settings, homeTextUrdu: v})} dir="rtl" />
+        </div>
+        <div className="flex justify-end pt-4 border-t border-stone-100 dark:border-stone-800">
+          <button type="submit" disabled={saving} className="bg-orange-600 text-white px-10 py-3 rounded-xl font-bold flex items-center gap-2 shadow-lg shadow-orange-600/20 hover:scale-105 transition-transform disabled:opacity-50 disabled:hover:scale-100">
+            <Save size={20} /> {saving ? 'Saving...' : 'Save Content'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+};
+
+// --- Main Admin Dashboard ---
+
+const AdminPanel = () => {
+  const [user, setUser] = useState<any>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [activeSection, setActiveSection] = useState('articles');
+  const [settings, setSettings] = useState<any>(null);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const navigate = useNavigate();
+
+  // Global UI State
+  const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
+  const [confirmModal, setConfirmModal] = useState<{ isOpen: boolean, title: string, message: string, onConfirm: () => void } | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type });
+  };
+
+  const confirmAction = (title: string, message: string, onConfirm: () => void) => {
+    setConfirmModal({ isOpen: true, title, message, onConfirm });
+  };
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(doc(db, 'config', 'main'), (snapshot) => {
+      if (snapshot.exists()) {
+        setSettings(snapshot.data());
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (u) => {
+      if (u) {
+        setUser(u);
+        const adminEmail = "muhammadshakir3098@gmail.com";
+        if (u.email === adminEmail) {
+          setIsAdmin(true);
+        } else {
+          setIsAdmin(false);
+          navigate('/');
+        }
+      } else {
+        setUser(null);
+        setIsAdmin(false);
+        navigate('/admin/login');
+      }
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, [navigate]);
+
+  const handleLogout = async () => {
+    await signOut(auth);
+    navigate('/admin/login');
+  };
+
+  if (loading) {
+    return <LoadingSpinner fullPage />;
+  }
+
+  const navItems = [
+    { id: 'home', label: 'Home', icon: HomeIcon },
+    { id: 'articles', label: 'Articles', icon: FileText },
+    { id: 'videos', label: 'Videos', icon: Youtube },
+    { id: 'hadith', label: 'Hadith', icon: Quote },
+    { id: 'quran', label: 'Quran', icon: BookOpen },
+    { id: 'books', label: 'Books', icon: Book },
+    { id: 'bio', label: 'Bio', icon: User },
+    { id: 'assistant', label: 'Assistant', icon: Bot },
+    { id: 'settings', label: 'Settings', icon: Settings },
+  ];
+
+  return (
+    <div className="min-h-screen bg-stone-50 dark:bg-black flex transition-colors duration-300 overflow-hidden relative">
+      {/* Mobile Sidebar Overlay */}
+      <AnimatePresence>
+        {isSidebarOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setIsSidebarOpen(false)}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 lg:hidden"
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Sidebar */}
+      <aside className={`fixed lg:static inset-y-0 left-0 w-64 flex-shrink-0 h-screen border-r border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 flex flex-col z-50 transition-transform duration-300 transform ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
+        <div className="p-6 border-b border-stone-200 dark:border-stone-800 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-orange-500 rounded-xl flex items-center justify-center text-white shadow-lg shadow-orange-500/20">
+              <Settings size={20} />
+            </div>
+            <h1 className="text-lg font-bold text-stone-900 dark:text-white">Admin Panel</h1>
+          </div>
+          <button onClick={() => setIsSidebarOpen(false)} className="lg:hidden p-2 text-stone-500">
+            <X size={20} />
+          </button>
+        </div>
+        
+        <nav className="flex-grow p-4 space-y-2 overflow-y-auto custom-scrollbar">
+          {navItems.map((item) => (
+            <button
+              key={item.id}
+              onClick={() => { setActiveSection(item.id); setIsSidebarOpen(false); }}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${
+                activeSection === item.id 
+                  ? 'bg-orange-500 text-white shadow-lg shadow-orange-500/20' 
+                  : 'text-stone-500 hover:bg-stone-100 dark:hover:bg-stone-800'
+              }`}
+            >
+              <item.icon size={20} />
+              <span className="font-bold text-sm">{item.label}</span>
+            </button>
+          ))}
+        </nav>
+
+        <div className="p-4 border-t border-stone-200 dark:border-stone-800 space-y-2">
+          <button onClick={() => navigate('/')} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-stone-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-all">
+            <Eye size={20} /> <span className="font-bold text-sm">View Site</span>
+          </button>
+          <button onClick={handleLogout} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all">
+            <LogOut size={20} /> <span className="font-bold text-sm">Logout</span>
+          </button>
+        </div>
+      </aside>
+
+      {/* Main Content */}
+      <main className="flex-1 min-w-0 h-screen flex flex-col overflow-hidden">
+        <header className="flex-shrink-0 bg-white/80 dark:bg-stone-900/80 backdrop-blur-md border-b border-stone-200 dark:border-stone-800 px-4 sm:px-8 py-6 flex items-center justify-between z-30">
+          <div className="flex items-center gap-4">
+            <button onClick={() => setIsSidebarOpen(true)} className="lg:hidden p-2 bg-stone-100 dark:bg-stone-800 rounded-lg text-stone-600 dark:text-stone-400">
+              <Menu size={20} />
+            </button>
+            <div>
+              <h2 className="text-xl sm:text-2xl font-bold text-stone-900 dark:text-white capitalize">{activeSection}</h2>
+              <p className="text-stone-500 text-xs sm:text-sm">Manage your website content</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-4">
+            <div className="text-right hidden sm:block">
+              <p className="text-sm font-bold text-stone-900 dark:text-white">{user?.email}</p>
+              <p className="text-[10px] text-orange-500 font-bold uppercase tracking-widest">Administrator</p>
+            </div>
+            <div className="w-10 h-10 rounded-full bg-orange-500/10 flex items-center justify-center text-orange-500 border border-orange-500/20">
+              <User size={20} />
+            </div>
+          </div>
+        </header>
+
+        <div className="flex-1 overflow-y-auto p-4 sm:p-8 custom-scrollbar">
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={activeSection}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.2 }}
+              className="max-w-7xl mx-auto"
+            >
+              {activeSection === 'home' && <AdminHome showToast={showToast} />}
+              {activeSection === 'articles' && <AdminArticles showToast={showToast} confirmAction={confirmAction} settings={settings} />}
+              {activeSection === 'videos' && <AdminPlaylists showToast={showToast} confirmAction={confirmAction} />}
+              {activeSection === 'hadith' && <AdminHadith showToast={showToast} confirmAction={confirmAction} settings={settings} />}
+              {activeSection === 'quran' && <AdminQuran showToast={showToast} confirmAction={confirmAction} settings={settings} />}
+              {activeSection === 'books' && <AdminBooks showToast={showToast} confirmAction={confirmAction} />}
+              {activeSection === 'bio' && <AdminBio showToast={showToast} confirmAction={confirmAction} />}
+              {activeSection === 'assistant' && <AdminAssistant showToast={showToast} />}
+              {activeSection === 'settings' && <AdminSettings showToast={showToast} />}
+            </motion.div>
+          </AnimatePresence>
+        </div>
+      </main>
+
+      <AnimatePresence>
+        {toast && (
+          <Toast 
+            message={toast.message} 
+            type={toast.type} 
+            onClose={() => setToast(null)} 
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {confirmModal?.isOpen && (
+          <ConfirmModal
+            isOpen={confirmModal.isOpen}
+            title={confirmModal.title}
+            message={confirmModal.message}
+            onConfirm={confirmModal.onConfirm}
+            onClose={() => setConfirmModal(null)}
+          />
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
+
+export default AdminPanel;

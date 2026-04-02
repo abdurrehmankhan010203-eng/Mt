@@ -1,0 +1,146 @@
+{
+  "entities": {
+    "article": {
+      "title": "Article",
+      "description": "A blog post or informational article",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "titleUrdu": { "type": "string" },
+        "content": { "type": "string" },
+        "contentUrdu": { "type": "string" },
+        "category": { "type": "string" },
+        "categoryUrdu": { "type": "string" },
+        "imageUrl": { "type": "string", "format": "url" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "titleUrdu", "content", "contentUrdu", "createdAt"]
+    },
+    "video": {
+      "title": "Video",
+      "description": "YouTube video entry",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "titleUrdu": { "type": "string" },
+        "description": { "type": "string" },
+        "descriptionUrdu": { "type": "string" },
+        "youtubeUrl": { "type": "string", "format": "url" },
+        "thumbnailUrl": { "type": "string", "format": "url" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "titleUrdu", "youtubeUrl", "createdAt"]
+    },
+    "hadith": {
+      "title": "Hadith",
+      "description": "A Hadith record",
+      "type": "object",
+      "properties": {
+        "arabic": { "type": "string" },
+        "english": { "type": "string" },
+        "urdu": { "type": "string" },
+        "reference": { "type": "string" },
+        "referenceUrdu": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["arabic", "english", "urdu", "reference", "createdAt"]
+    },
+    "quranVerse": {
+      "title": "Quran Verse",
+      "description": "A verse from the Quran",
+      "type": "object",
+      "properties": {
+        "arabic": { "type": "string" },
+        "english": { "type": "string" },
+        "urdu": { "type": "string" },
+        "surahName": { "type": "string" },
+        "surahNameUrdu": { "type": "string" },
+        "verseNumber": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["arabic", "english", "urdu", "surahName", "verseNumber", "createdAt"]
+    },
+    "book": {
+      "title": "Book",
+      "description": "A book entry with PDF and cover",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "titleUrdu": { "type": "string" },
+        "description": { "type": "string" },
+        "descriptionUrdu": { "type": "string" },
+        "pdfUrl": { "type": "string", "format": "url" },
+        "coverUrl": { "type": "string", "format": "url" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "titleUrdu", "pdfUrl", "createdAt"]
+    },
+    "bioSegment": {
+      "title": "Bio Segment",
+      "description": "A segment of the biography",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "titleUrdu": { "type": "string" },
+        "content": { "type": "string" },
+        "contentUrdu": { "type": "string" },
+        "imageUrl": { "type": "string", "format": "url" },
+        "order": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "titleUrdu", "content", "contentUrdu", "order", "createdAt"]
+    },
+    "assistantSettings": {
+      "title": "Assistant Settings",
+      "description": "AI Assistant configuration",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "role": { "type": "string" },
+        "welcomeMessage": { "type": "string" },
+        "welcomeMessageUrdu": { "type": "string" },
+        "systemInstructions": { "type": "string" },
+        "voice": { "type": "string" },
+        "mode": { "type": "string" }
+      }
+    },
+    "siteConfig": {
+      "title": "Site Configuration",
+      "description": "Global settings and homepage content",
+      "type": "object",
+      "properties": {
+        "homeHeading": { "type": "string" },
+        "homeHeadingUrdu": { "type": "string" },
+        "homeSubheading": { "type": "string" },
+        "homeSubheadingUrdu": { "type": "string" },
+        "homeText": { "type": "string" },
+        "homeTextUrdu": { "type": "string" },
+        "homeImageUrl": { "type": "string", "format": "url" },
+        "headingFont": { "type": "string" },
+        "bodyFont": { "type": "string" },
+        "customFonts": { "type": "array" }
+      }
+    },
+    "user": {
+      "title": "User",
+      "description": "User profile and permissions",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "format": "email" },
+        "role": { "type": "string", "enum": ["admin", "user"] }
+      },
+      "required": ["email", "role"]
+    }
+  },
+  "firestore": {
+    "/articles/{articleId}": { "schema": "article", "description": "Collection of articles" },
+    "/videos/{videoId}": { "schema": "video", "description": "Collection of videos" },
+    "/hadith/{hadithId}": { "schema": "hadith", "description": "Collection of Hadiths" },
+    "/quran_verses/{verseId}": { "schema": "quranVerse", "description": "Collection of Quran verses" },
+    "/books/{bookId}": { "schema": "book", "description": "Collection of books" },
+    "/biography/{segmentId}": { "schema": "bioSegment", "description": "Collection of biography segments" },
+    "/settings/assistant": { "schema": "assistantSettings", "description": "AI Assistant settings" },
+    "/config/main": { "schema": "siteConfig", "description": "Global site configuration" },
+    "/users/{userId}": { "schema": "user", "description": "User profiles and roles" }
+  }
+}

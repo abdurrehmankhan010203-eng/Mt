@@ -1,0 +1,97 @@
+import express from "express";
+import { createServer } from "http";
+import { Server } from "socket.io";
+import { createServer as createViteServer } from "vite";
+import path from "path";
+import { fileURLToPath } from "url";
+import fs from "fs";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+async function startServer() {
+  const app = express();
+  const httpServer = createServer(app);
+  const io = new Server(httpServer, {
+    cors: {
+      origin: "*",
+    },
+  });
+
+  const PORT = 3000;
+
+  // In-memory view counts with persistence
+  let viewCounts: Record<string, number> = {};
+  const VIEWS_FILE = path.join(__dirname, "views.json");
+
+  // Load views from file if it exists
+  try {
+    if (fs.existsSync(VIEWS_FILE)) {
+      const data = fs.readFileSync(VIEWS_FILE, "utf-8");
+      viewCounts = JSON.parse(data);
+      console.log("Loaded view counts from file:", viewCounts);
+    }
+  } catch (err) {
+    console.error("Error loading view counts:", err);
+  }
+
+  // Save views to file
+  const saveViews = () => {
+    try {
+      fs.writeFileSync(VIEWS_FILE, JSON.stringify(viewCounts, null, 2));
+    } catch (err) {
+      console.error("Error saving view counts:", err);
+    }
+  };
+
+  // API Routes
+  app.get("/api/views", (req, res) => {
+    res.json(viewCounts);
+  });
+
+  // Socket.io logic
+  io.on("connection", (socket) => {
+    console.log("A user connected:", socket.id);
+
+    // Send initial counts
+    socket.emit("views:update", viewCounts);
+
+    socket.on("view:article", (articleId: string) => {
+      if (viewCounts[articleId] === undefined) {
+        viewCounts[articleId] = 0;
+      }
+      viewCounts[articleId]++;
+      console.log(`View tracked for ${articleId}. New count: ${viewCounts[articleId]}`);
+      
+      // Save to file
+      saveViews();
+      
+      // Broadcast to ALL clients (including sender)
+      io.emit("views:update", viewCounts);
+    });
+
+    socket.on("disconnect", () => {
+      console.log("User disconnected:", socket.id);
+    });
+  });
+
+  // Vite middleware for development
+  if (process.env.NODE_ENV !== "production") {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa",
+    });
+    app.use(vite.middlewares);
+  } else {
+    app.use(express.static(path.join(__dirname, "dist")));
+    app.get("*", (req, res) => {
+      res.sendFile(path.join(__dirname, "dist", "index.html"));
+    });
+  }
+
+  httpServer.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://0.0.0.0:${PORT}`);
+  });
+}
+
+startServer();
